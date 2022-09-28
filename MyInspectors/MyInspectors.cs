@@ -64,7 +64,10 @@ namespace MyInspectors
             }
             [HarmonyPatch("OnAttach")]
             [HarmonyPostfix]
-            public static void OnAttachPostfix(SceneInspector __instance) => __instance.ComponentView.OnTargetChange += slotCallback;
+            public static void OnAttachPostfix(SceneInspector __instance)
+            {
+                if (!__instance.World.IsAuthority) __instance.ComponentView.OnTargetChange += slotCallback;
+            }
 
         }
         private static void slotCallback(SyncRef<Slot> s)
@@ -92,8 +95,8 @@ namespace MyInspectors
                 };
 
                 var lst = codes.ToList();
-                
-                lst.InsertRange(lst.FindIndex((instruction) => 
+
+                lst.InsertRange(lst.FindIndex((instruction) =>
                     instruction.Is(OpCodes.Callvirt, typeof(UIBuilder).GetMethod("VerticalLayout", new Type[] { typeof(float), typeof(float), typeof(Alignment?) }))) + 2,
                     injectCodes
                 );
@@ -103,7 +106,7 @@ namespace MyInspectors
 
             public static void ReOrder(Slot slot)
             {
-                if(!slot.World.IsAuthority)
+                if (!slot.World.IsAuthority)
                 {
                     slot.OrderOffset = -1;
                 }
