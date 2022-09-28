@@ -19,7 +19,6 @@ namespace MyInspectors
         public override string Author => "art0007i";
         public override string Version => "1.0.0";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
-        private static HashSet<SceneInspector> inspectors = new();
         public override void OnEngineInit()
         {
             Harmony harmony = new Harmony("me.art0007i.MyInspectors");
@@ -65,20 +64,19 @@ namespace MyInspectors
             }
             [HarmonyPatch("OnAttach")]
             [HarmonyPostfix]
-            public static void OnAttachPostfix(SceneInspector __instance)
+            public static void OnAttachPostfix(SceneInspector __instance) => __instance.ComponentView.OnTargetChange += slotCallback;
+
+        }
+        private static void slotCallback(SyncRef<Slot> s)
+        {
+            if (s.Target != null)
             {
-                inspectors.Add(__instance);
-                __instance.ComponentView.OnTargetChange += (s) =>
-                {
-                    if (s.Target != null && inspectors.Contains(__instance))
-                    {
-                        inspectors.Remove(__instance);
-                        Slot old = s.Target;
-                        Msg(s.Target.Name);
-                        __instance.RunInUpdates(0, () => __instance.ComponentView.Target = null);
-                        __instance.RunInUpdates(2, () => __instance.ComponentView.Target = old);
-                    }
-                };
+                var i = (SceneInspector)s.Parent;
+                i.ComponentView.OnTargetChange -= slotCallback;
+                Slot old = s.Target;
+                Msg(s.Target.Name);
+                i.RunInUpdates(0, () => i.ComponentView.Target = null);
+                i.RunInUpdates(2, () => i.ComponentView.Target = old);
             }
         }
         /*
