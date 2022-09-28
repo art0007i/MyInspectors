@@ -17,7 +17,7 @@ namespace MyInspectors
     {
         public override string Name => "MyInspectors";
         public override string Author => "art0007i";
-        public override string Version => "1.0.0";
+        public override string Version => "1.1.0";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
         public override void OnEngineInit()
         {
@@ -79,7 +79,7 @@ namespace MyInspectors
                 i.RunInUpdates(2, () => i.ComponentView.Target = old);
             }
         }
-        /*
+
         [HarmonyPatch(typeof(WorkerInspector), "BuildUIForComponent")]
         class ComponentOrderPatch
         {
@@ -109,8 +109,6 @@ namespace MyInspectors
                 }
             }
         }
-        */
-
 
         /*
          * This doesn't work because the host will always generate the ui for newly added components, not much I can do here as far as I can tell.
