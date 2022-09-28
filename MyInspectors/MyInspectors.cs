@@ -9,7 +9,7 @@ using FrooxEngine;
 using FrooxEngine.LogiX;
 using BaseX;
 using System.Reflection.Emit;
-using FrooxEngine.UIX;
+using FrooxEngine.UIX;  
 
 namespace MyInspectors
 {
@@ -17,7 +17,7 @@ namespace MyInspectors
     {
         public override string Name => "MyInspectors";
         public override string Author => "art0007i";
-        public override string Version => "1.0.0";
+        public override string Version => "1.2.0";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
         public override void OnEngineInit()
         {
@@ -25,15 +25,30 @@ namespace MyInspectors
             harmony.PatchAll();
         }
         [HarmonyPatch(typeof(SceneInspector))]
-        [HarmonyPatch("OnChanges")]
-        class SceneInspector_OnChanges_Patch
+        class SceneInspector_Patch
         {
-            public static bool Prefix(SceneInspector __instance, SyncRef<Slot> ____currentComponent, SyncRef<Slot> ____componentsContentRoot, SyncRef<Sync<string>> ____componentText)
+            [HarmonyPatch("OnAttach")]
+            [HarmonyPostfix]
+            public static void Prefix(SceneInspector __instance)
             {
-                var based = __instance;
-                var curCom = ____currentComponent;
-                if (based.ComponentView.IsSyncDirty)
+                // run in updates 0 to wait until the target has been updated
+                __instance.RunInUpdates(0, () => HookMethod(__instance.ComponentView, true));
+            }
+
+            [HarmonyPatch("OnChanges")]
+            [HarmonyPrefix]
+            public static void ChangesPatch(SceneInspector __instance) {
+                HookMethod(__instance.ComponentView);
+            }
+
+            public static void HookMethod(SyncRef<Slot> compView, bool force = false)
+            {
+                var based = compView.Parent as SceneInspector;
+                var curCom = AccessTools.Field(typeof(SceneInspector), "_currentComponent").GetValue(based) as SyncRef<Slot>;
+                // "IsSyncDirty" basically means that it's state has been modified but hasn't been sent over the network yet
+                if (based.ComponentView.IsSyncDirty || force)
                 {
+                    // This is basically the default "SceneInspector.OnChanges" function.
                     if (curCom.Target != based.ComponentView.Target)
                     {
                         if (curCom.Target != null)
@@ -44,12 +59,12 @@ namespace MyInspectors
                         {
                             based.ComponentView.Target.GetGizmo(null);
                         }
-                        var comConRoot = ____componentsContentRoot;
+                        var comConRoot = AccessTools.Field(typeof(SceneInspector), "_componentsContentRoot").GetValue(based) as SyncRef<Slot>;
                         comConRoot.Target.DestroyChildren(false, true, false, null);
                         curCom.Target = based.ComponentView.Target;
-                        var comText = ____componentText;
+                        var comText = AccessTools.Field(typeof(SceneInspector), "_componentText").GetValue(based) as SyncRef<Sync<string>>;
                         SyncField<string> target4 = comText.Target;
-                        string str2 = "Slót: ";
+                        string str2 = "Slot: ";
                         Slot target5 = curCom.Target;
                         target4.Value = str2 + (((target5 != null) ? target5.Name : null) ?? "<i>null</i>");
                         if (curCom.Target != null)
@@ -58,12 +73,13 @@ namespace MyInspectors
                         }
                     }
                 }
-                return true;
             }
         }
+        /*
         [HarmonyPatch(typeof(WorkerInspector), "BuildUIForComponent")]
         class ComponentOrderPatch
         {
+            // This patch might not be needed anymore but i'll keep it for safety?
             public static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes)
             {
                 var injectCodes = new CodeInstruction[] {
@@ -73,8 +89,8 @@ namespace MyInspectors
                 };
 
                 var lst = codes.ToList();
-                
-                lst.InsertRange(lst.FindIndex((instruction) => 
+
+                lst.InsertRange(lst.FindIndex((instruction) =>
                     instruction.Is(OpCodes.Callvirt, typeof(UIBuilder).GetMethod("VerticalLayout", new Type[] { typeof(float), typeof(float), typeof(Alignment?) }))) + 2,
                     injectCodes
                 );
@@ -84,55 +100,74 @@ namespace MyInspectors
 
             public static void ReOrder(Slot slot)
             {
-                if(!slot.World.IsAuthority)
+                if (!slot.World.IsAuthority)
                 {
                     slot.OrderOffset = -1;
                 }
             }
         }
+        */
 
 
-
-        /*
-         * This doesn't work because the host will always generate the ui for newly added components, not much I can do here as far as I can tell.
-         * 
+        // This part is for making newly added/removed components processed by local user instead of host
         [HarmonyPatch(typeof(WorkerInspector))]
-        [HarmonyPatch("OnChanges")]
-        class WorkerInspector_OnAwake_Patch
+        class WorkerInspector_Patch
         {
-            public static bool Prefix(WorkerInspector __instance, Worker ____currentContainer, SyncRef<Worker> ____targetContainer)
+            [HarmonyPatch("OnChanges")]
+            [HarmonyPrefix]
+            public static bool Prefix(SyncRef<Worker> ____targetContainer)
             {
-                Msg("registering component events");
-                var curCon = ____currentContainer;
-                var tarCon = ____targetContainer;
-                if (curCon != tarCon.Target)
-                {
-                    Slot slot = tarCon.Target as Slot;
-                    User user = tarCon.Target as User;
-                    var comAdd = AccessTools.Method(__instance.GetType(), "OnComponentAdded").CreateDelegate(typeof(ComponentEvent<Component>), __instance) as ComponentEvent<Component>;
-                    var comRem = AccessTools.Method(__instance.GetType(), "OnComponentRemoved").CreateDelegate(typeof(ComponentEvent<Component>), __instance) as ComponentEvent<Component>;
-                    var usrComAdd = AccessTools.Method(__instance.GetType(), "UserComponentAdded").CreateDelegate(typeof(ComponentEvent<UserComponent>), __instance) as ComponentEvent<UserComponent>;
-                    var usrComRem = AccessTools.Method(__instance.GetType(), "UserComponentRemoved").CreateDelegate(typeof(ComponentEvent<UserComponent>), __instance) as ComponentEvent<UserComponent>;
-                    var streamAdd = AccessTools.Method(__instance.GetType(), "StreamAdded").CreateDelegate(typeof(Action<Stream>), __instance) as Action<Stream>;
-                    var streamRem = AccessTools.Method(__instance.GetType(), "StreamRemoved").CreateDelegate(typeof(Action<Stream>), __instance) as Action<Stream>;
-                    
-                    if (slot != null)
-                    {
-                        slot.ComponentAdded += comAdd;
-                        slot.ComponentRemoved += comRem;
-                    }
-                    if (user != null)
-                    {
-                        user.ComponentAdded += usrComAdd;
-                        user.ComponentRemoved += usrComRem;
-                        user.StreamAdded += streamAdd;
-                        user.StreamRemoved += streamRem;
-                    }
-                }
+                WorkerHook(____targetContainer);
+
+                // cancel normal method, its functionality is fully replaced by WorkerHook.
                 return false;
             }
+
+            [HarmonyPatch("SetupContainer")]
+            [HarmonyPostfix]
+            public static void Postfix(SyncRef<Worker> ____targetContainer)
+            {
+                WorkerHook(____targetContainer, true);
+            }
+
+            public static void WorkerHook(SyncRef<Worker> w, bool force = false)
+            {
+                WorkerInspector __instance = w.Parent as WorkerInspector;
+                var curConField = AccessTools.Field(typeof(WorkerInspector), "_currentContainer");
+                var tarCon = AccessTools.Field(typeof(WorkerInspector), "_targetContainer").GetValue(__instance) as SyncRef<Worker>;
+                if (tarCon.Target != null && tarCon.IsSyncDirty || force)
+                {
+                    if (curConField.GetValue(__instance) != tarCon.Target)
+                    {
+                        AccessTools.Method(__instance.GetType(), "UnregisterEvents").Invoke(__instance, null);
+                        Slot slot = tarCon.Target as Slot;
+                        User user = tarCon.Target as User;
+                        var comAdd = AccessTools.Method(__instance.GetType(), "OnComponentAdded").CreateDelegate(typeof(ComponentEvent<Component>), __instance) as ComponentEvent<Component>;
+                        var comRem = AccessTools.Method(__instance.GetType(), "OnComponentRemoved").CreateDelegate(typeof(ComponentEvent<Component>), __instance) as ComponentEvent<Component>;
+                        var usrComAdd = AccessTools.Method(__instance.GetType(), "UserComponentAdded").CreateDelegate(typeof(ComponentEvent<UserComponent>), __instance) as ComponentEvent<UserComponent>;
+                        var usrComRem = AccessTools.Method(__instance.GetType(), "UserComponentRemoved").CreateDelegate(typeof(ComponentEvent<UserComponent>), __instance) as ComponentEvent<UserComponent>;
+                        var streamAdd = AccessTools.Method(__instance.GetType(), "StreamAdded").CreateDelegate(typeof(Action<Stream>), __instance) as Action<Stream>;
+                        var streamRem = AccessTools.Method(__instance.GetType(), "StreamRemoved").CreateDelegate(typeof(Action<Stream>), __instance) as Action<Stream>;
+
+                        if (slot != null)
+                        {
+                            slot.ComponentAdded += comAdd;
+                            slot.ComponentRemoved += comRem;
+                        }
+                        if (user != null)
+                        {
+                            user.ComponentAdded += usrComAdd;
+                            user.ComponentRemoved += usrComRem;
+                            user.StreamAdded += streamAdd;
+                            user.StreamRemoved += streamRem;
+                        }
+                        curConField.SetValue(__instance, tarCon.Target);
+                    }
+                    tarCon.Target = null;
+                }
+            }
         }
-        */
+
         /*
          * I was trying to do some really weird stuff with registering change events instead of using the normal "OnChanges" method.
          * 
