@@ -19,16 +19,19 @@ namespace MyInspectors
         public override string Author => "art0007i";
         public override string Version => "1.0.0";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
+        private static HashSet<SceneInspector> inspectors = new();
         public override void OnEngineInit()
         {
             Harmony harmony = new Harmony("me.art0007i.MyInspectors");
             harmony.PatchAll();
         }
         [HarmonyPatch(typeof(SceneInspector))]
-        [HarmonyPatch("OnChanges")]
+
         class SceneInspector_OnChanges_Patch
         {
-            public static bool Prefix(SceneInspector __instance, SyncRef<Slot> ____currentComponent, SyncRef<Slot> ____componentsContentRoot, SyncRef<Sync<string>> ____componentText)
+            [HarmonyPatch("OnChanges")]
+            [HarmonyPrefix]
+            public static bool OnChangesPrefix(SceneInspector __instance, SyncRef<Slot> ____currentComponent, SyncRef<Slot> ____componentsContentRoot, SyncRef<Sync<string>> ____componentText)
             {
                 var based = __instance;
                 var curCom = ____currentComponent;
@@ -60,7 +63,25 @@ namespace MyInspectors
                 }
                 return true;
             }
+            [HarmonyPatch("OnAttach")]
+            [HarmonyPostfix]
+            public static void OnAttachPostfix(SceneInspector __instance)
+            {
+                inspectors.Add(__instance);
+                __instance.ComponentView.OnTargetChange += (s) =>
+                {
+                    if (s.Target != null && inspectors.Contains(__instance))
+                    {
+                        inspectors.Remove(__instance);
+                        Slot old = s.Target;
+                        Msg(s.Target.Name);
+                        __instance.RunInUpdates(0, () => __instance.ComponentView.Target = null);
+                        __instance.RunInUpdates(2, () => __instance.ComponentView.Target = old);
+                    }
+                };
+            }
         }
+        /*
         [HarmonyPatch(typeof(WorkerInspector), "BuildUIForComponent")]
         class ComponentOrderPatch
         {
@@ -90,7 +111,7 @@ namespace MyInspectors
                 }
             }
         }
-
+        */
 
 
         /*
@@ -115,7 +136,7 @@ namespace MyInspectors
                     var usrComRem = AccessTools.Method(__instance.GetType(), "UserComponentRemoved").CreateDelegate(typeof(ComponentEvent<UserComponent>), __instance) as ComponentEvent<UserComponent>;
                     var streamAdd = AccessTools.Method(__instance.GetType(), "StreamAdded").CreateDelegate(typeof(Action<Stream>), __instance) as Action<Stream>;
                     var streamRem = AccessTools.Method(__instance.GetType(), "StreamRemoved").CreateDelegate(typeof(Action<Stream>), __instance) as Action<Stream>;
-                    
+
                     if (slot != null)
                     {
                         slot.ComponentAdded += comAdd;
