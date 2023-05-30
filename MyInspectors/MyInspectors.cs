@@ -9,7 +9,7 @@ using FrooxEngine;
 using FrooxEngine.LogiX;
 using BaseX;
 using System.Reflection.Emit;
-using FrooxEngine.UIX;  
+using FrooxEngine.UIX;
 
 namespace MyInspectors
 {
@@ -24,6 +24,16 @@ namespace MyInspectors
             Harmony harmony = new Harmony("me.art0007i.MyInspectors");
             harmony.PatchAll();
         }
+
+        static FieldInfo _currentRoot = AccessTools.Field(typeof(SceneInspector), "_currentRoot");
+        static FieldInfo _componentsContentRoot = AccessTools.Field(typeof(SceneInspector), "_componentsContentRoot");
+        static FieldInfo _currentComponent = AccessTools.Field(typeof(SceneInspector), "_currentComponent");
+        static FieldInfo _componentText = AccessTools.Field(typeof(SceneInspector), "_componentText");
+        static FieldInfo _hierarchyContentRoot = AccessTools.Field(typeof(SceneInspector), "_hierarchyContentRoot");
+        static FieldInfo _rootText = AccessTools.Field(typeof(SceneInspector), "_rootText");
+        static MethodInfo OnChanges = AccessTools.Method(typeof(SlotInspector), "OnChanges");
+        static FieldInfo _target = AccessTools.Field(typeof(SyncRef<Slot>), "_target");
+
         [HarmonyPatch(typeof(SceneInspector))]
         class SceneInspector_Patch
         {
@@ -32,37 +42,37 @@ namespace MyInspectors
             public static void Prefix(SceneInspector __instance)
             {
                 // run in updates 0 to wait until the target has been updated
-                __instance.RunInUpdates(0, () => HookMethod(__instance.ComponentView, true));
+                __instance.RunInUpdates(0, () => HookMethod(__instance, true));
             }
 
             [HarmonyPatch("OnChanges")]
             [HarmonyPrefix]
-            public static void ChangesPatch(SceneInspector __instance) {
-                HookMethod(__instance.ComponentView);
+            public static void ChangesPatch(SceneInspector __instance)
+            {
+                HookMethod(__instance);
             }
 
-            public static void HookMethod(SyncRef<Slot> compView, bool force = false)
+            public static void HookMethod(SceneInspector inspector, bool force = false)
             {
-                var based = compView.Parent as SceneInspector;
-                var curCom = AccessTools.Field(typeof(SceneInspector), "_currentComponent").GetValue(based) as SyncRef<Slot>;
+                var curCom = _currentComponent.GetValue(inspector) as SyncRef<Slot>;
                 // "IsSyncDirty" basically means that it's state has been modified but hasn't been sent over the network yet
-                if (based.ComponentView.IsSyncDirty || force)
+                if (inspector.ComponentView.IsSyncDirty || force)
                 {
                     // This is basically the default "SceneInspector.OnChanges" function.
-                    if (curCom.Target != based.ComponentView.Target)
+                    if (curCom.Target != inspector.ComponentView.Target)
                     {
                         if (curCom.Target != null)
                         {
                             curCom.Target.RemoveGizmo(null);
                         }
-                        if (based.ComponentView.Target != null && !based.ComponentView.Target.IsRootSlot)
+                        if (inspector.ComponentView.Target != null && !inspector.ComponentView.Target.IsRootSlot)
                         {
-                            based.ComponentView.Target.GetGizmo(null);
+                            inspector.ComponentView.Target.GetGizmo(null);
                         }
-                        var comConRoot = AccessTools.Field(typeof(SceneInspector), "_componentsContentRoot").GetValue(based) as SyncRef<Slot>;
+                        var comConRoot = _componentsContentRoot.GetValue(inspector) as SyncRef<Slot>;
                         comConRoot.Target.DestroyChildren(false, true, false, null);
-                        curCom.Target = based.ComponentView.Target;
-                        var comText = AccessTools.Field(typeof(SceneInspector), "_componentText").GetValue(based) as SyncRef<Sync<string>>;
+                        curCom.Target = inspector.ComponentView.Target;
+                        var comText = _componentText.GetValue(inspector) as SyncRef<Sync<string>>;
                         SyncField<string> target4 = comText.Target;
                         string str2 = "Slot: ";
                         Slot target5 = curCom.Target;
@@ -73,7 +83,64 @@ namespace MyInspectors
                         }
                     }
                 }
+                var curRoot = _currentRoot.GetValue(inspector) as SyncRef<Slot>;
+                var hiCurRoot = _hierarchyContentRoot.GetValue(inspector) as SyncRef<Slot>;
+                if (curRoot.Target != inspector.Root.Target && inspector.Root.IsSyncDirty)
+                {
+                    curRoot.Target = inspector.Root.Target;
+                    hiCurRoot.Target.DestroyChildren();
+                    (_rootText.GetValue(inspector) as SyncRef<Sync<string>>).Target.Value = "Root: " + (curRoot.Target?.Name ?? "<i>null</i>");
+                    if (curRoot.Target != null)
+                    {
+                        hiCurRoot.Target.AddSlot("HierarchyRoot").AttachComponent<SlotInspector>().Setup(curRoot.Target, curCom);
+                    }
+                }
             }
+        }
+
+        public static bool IsAlocatingUser(IWorldElement element) => element.ReferenceID.User == element.World.LocalUser.AllocationID;
+
+
+        [HarmonyPatch(typeof(SlotInspector))]
+        class SlotInspector_Patch
+        {
+            [HarmonyPatch("OnChanges")]
+            [HarmonyTranspiler]
+            static IEnumerable<CodeInstruction> OnChanges_Transpiler(IEnumerable<CodeInstruction> codes)
+            {
+                int hit = 0;
+                foreach (var code in codes)
+                {
+                    if (hit <= 0 && (code.operand as MethodInfo)?.Name == "get_World")
+                    {
+                        hit++;
+                        code.operand = AccessTools.Method(typeof(MyInspectors), nameof(IsAlocatingUser));
+                        yield return code;
+                    }
+                    else if (hit == 1)
+                    {
+                        hit++;
+                        yield return new(OpCodes.Nop);
+                    }
+                    else
+                    {
+                        yield return code;
+                    }
+                }
+            }
+            [HarmonyPatch("Setup")]
+            [HarmonyPrefix]
+            static bool Setup_Prefix(SlotInspector __instance, Slot target, SyncRef<Slot> selectionReference, int depth, RelayRef<SyncRef<Slot>> ____selectionReference, Sync<int> ____depth, SyncRef<Slot> ____rootSlot)
+            {
+                if (__instance.World.IsAuthority) return true;
+                ____selectionReference.Target = selectionReference;
+                ____depth.Value = depth;
+                _target.SetValue(____rootSlot, target); //i think there is some proper way to set a local value but i forget it.
+
+                OnChanges.Invoke(__instance, null);
+                return false;
+            }
+
         }
         /*
         [HarmonyPatch(typeof(WorkerInspector), "BuildUIForComponent")]
