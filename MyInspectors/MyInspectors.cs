@@ -32,7 +32,12 @@ namespace MyInspectors
         static FieldInfo _hierarchyContentRoot = AccessTools.Field(typeof(SceneInspector), "_hierarchyContentRoot");
         static FieldInfo _rootText = AccessTools.Field(typeof(SceneInspector), "_rootText");
         static MethodInfo OnChanges = AccessTools.Method(typeof(SlotInspector), "OnChanges");
-        static FieldInfo _target = AccessTools.Field(typeof(SyncRef<Slot>), "_target");
+        static FieldInfo slot_target = AccessTools.Field(typeof(SyncRef<Slot>), "_target");
+        static FieldInfo user_target = AccessTools.Field(typeof(SyncRef<User>), "_target");
+        static FieldInfo syncBag_target = AccessTools.Field(typeof(SyncRef<ISyncBag>), "_target");
+        static FieldInfo synclist_target = AccessTools.Field(typeof(SyncRef<ISyncList>), "_target");
+        static MethodInfo BagEditorAddNewPressed = AccessTools.Method(typeof(BagEditor), "AddNewPressed");
+        static MethodInfo ListEditorAddNewPressed = AccessTools.Method(typeof(ListEditor), "AddNewPressed");
 
         [HarmonyPatch(typeof(SceneInspector))]
         class SceneInspector_Patch
@@ -98,15 +103,19 @@ namespace MyInspectors
             }
         }
 
-        public static bool IsAlocatingUser(IWorldElement element) => element.ReferenceID.User == element.World.LocalUser.AllocationID;
+        static bool IsAlocatingUser(IWorldElement element) => element.ReferenceID.User == element.World.LocalUser.AllocationID;
 
-
-        [HarmonyPatch(typeof(SlotInspector))]
-        class SlotInspector_Patch
+        [HarmonyPatch]
+        class Transpiler_AlocatingUser
         {
-            [HarmonyPatch("OnChanges")]
-            [HarmonyTranspiler]
-            static IEnumerable<CodeInstruction> OnChanges_Transpiler(IEnumerable<CodeInstruction> codes)
+            static IEnumerable<MethodBase> TargetMethods()
+            {
+                yield return AccessTools.Method(typeof(SlotInspector), "OnChanges");
+                yield return AccessTools.Method(typeof(UserInspectorItem), "OnChanges");
+                yield return AccessTools.Method(typeof(BagEditor), "OnChanges");
+                yield return AccessTools.Method(typeof(ListEditor), "OnChanges");
+            }
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes)
             {
                 int hit = 0;
                 foreach (var code in codes)
@@ -128,19 +137,59 @@ namespace MyInspectors
                     }
                 }
             }
-            [HarmonyPatch("Setup")]
-            [HarmonyPrefix]
-            static bool Setup_Prefix(SlotInspector __instance, Slot target, SyncRef<Slot> selectionReference, int depth, RelayRef<SyncRef<Slot>> ____selectionReference, Sync<int> ____depth, SyncRef<Slot> ____rootSlot)
+        }
+
+        [HarmonyPatch(typeof(SlotInspector), nameof(SlotInspector.Setup))]
+        class SlotInspector_Patch
+        {
+            static bool Prefix(SlotInspector __instance, Slot target, SyncRef<Slot> selectionReference, int depth, RelayRef<SyncRef<Slot>> ____selectionReference, Sync<int> ____depth, SyncRef<Slot> ____rootSlot)
             {
                 if (__instance.World.IsAuthority) return true;
                 ____selectionReference.Target = selectionReference;
                 ____depth.Value = depth;
-                _target.SetValue(____rootSlot, target); //i think there is some proper way to set a local value but i forget it.
+                slot_target.SetValue(____rootSlot, target); //i think there is some proper way to set a local value but i forget it.
 
                 OnChanges.Invoke(__instance, null);
                 return false;
             }
+        }
 
+        [HarmonyPatch(typeof(UserInspectorItem), nameof(UserInspectorItem.Setup))]
+        class UserInspectorItem_Patch
+        {
+            static bool Prefix(UserInspectorItem __instance, User user, SyncRef<User> ____user)
+            {
+                if (__instance.World.IsAuthority) return true;
+                user_target.SetValue(____user, user);
+                return false;
+            }
+        }
+        //these 2 could have some extra stuff done so they work after being loaded from a non local save. its not really worth it imo but something worth noting
+        //from looking into it some good options are FrooxEngine.MaterialRelay.MaterialRefs and comp slot bag 
+        [HarmonyPatch(typeof(BagEditor), nameof(BagEditor.Setup))]
+        class BagEditor_Patch
+        {
+            static bool Prefix(BagEditor __instance, ISyncBag target, Button button, SyncRef<ISyncBag> ____targetBag, SyncRef<Button> ____addNewButton)
+            {
+                if (__instance.World.IsAuthority) return true;
+                ____addNewButton.Target = button;
+                syncBag_target.SetValue(____targetBag, target);
+                button.Pressed.Target = BagEditorAddNewPressed.CreateDelegate(typeof(ButtonEventHandler), __instance) as ButtonEventHandler;
+                return false;
+            }
+        }
+
+        [HarmonyPatch(typeof(ListEditor), nameof(ListEditor.Setup))]
+        class ListEditor_Patch
+        {
+            static bool Prefix(ListEditor __instance, ISyncList target, Button button, SyncRef<ISyncList> ____targetList, SyncRef<Button> ____addNewButton)
+            {
+                if (__instance.World.IsAuthority) return true;
+                ____addNewButton.Target = button;
+                synclist_target.SetValue(____targetList, target);
+                button.Pressed.Target = ListEditorAddNewPressed.CreateDelegate(typeof(ButtonEventHandler), __instance) as ButtonEventHandler;
+                return false;
+            }
         }
         /*
         [HarmonyPatch(typeof(WorkerInspector), "BuildUIForComponent")]
