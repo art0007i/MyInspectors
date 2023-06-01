@@ -17,7 +17,7 @@ namespace MyInspectors
     {
         public override string Name => "MyInspectors";
         public override string Author => "art0007i";
-        public override string Version => "1.2.0";
+        public override string Version => "1.3.0";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
         public override void OnEngineInit()
         {
