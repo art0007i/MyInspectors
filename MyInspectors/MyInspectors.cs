@@ -96,6 +96,7 @@ namespace MyInspectors
                     if (code.opcode == OpCodes.Beq)
                     {
                         var code2 = codes[i - 2];
+                        // targets the "if currentRoot != targetRoot" statements in scene inspector
                         if (code2.operand is FieldInfo f && (f == rootfield || f == compfield))
                         {
                             // if (IsHost | IsChangedLocally) & !(original statement)
