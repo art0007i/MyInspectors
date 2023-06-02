@@ -1,0 +1,12 @@
+{
+    "1.3.0": {
+        "releaseUrl": "https://github.com/art0007i/MyInspectors/releases/tag/1.3.0",
+        "artifacts": [
+            {
+                "url": "https://github.com/art0007i/MyInspectors/releases/download/1.3.0/MyInspectors.dll",
+                "filename": "MyInspectors.dll",
+                "sha256": "c2717fdce707f2bd66ee515fc2dadc5e82cb580867f5393e6356f12af66548f0"
+            }
+        ]
+    }
+}

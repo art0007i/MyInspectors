@@ -25,12 +25,6 @@ namespace MyInspectors
             harmony.PatchAll();
         }
 
-        static FieldInfo _currentRoot = AccessTools.Field(typeof(SceneInspector), "_currentRoot");
-        static FieldInfo _componentsContentRoot = AccessTools.Field(typeof(SceneInspector), "_componentsContentRoot");
-        static FieldInfo _currentComponent = AccessTools.Field(typeof(SceneInspector), "_currentComponent");
-        static FieldInfo _componentText = AccessTools.Field(typeof(SceneInspector), "_componentText");
-        static FieldInfo _hierarchyContentRoot = AccessTools.Field(typeof(SceneInspector), "_hierarchyContentRoot");
-        static FieldInfo _rootText = AccessTools.Field(typeof(SceneInspector), "_rootText");
         static MethodInfo OnChanges = AccessTools.Method(typeof(SlotInspector), "OnChanges");
         static FieldInfo slot_target = AccessTools.Field(typeof(SyncRef<Slot>), "_target");
         static FieldInfo user_target = AccessTools.Field(typeof(SyncRef<User>), "_target");
@@ -38,66 +32,99 @@ namespace MyInspectors
         static FieldInfo synclist_target = AccessTools.Field(typeof(SyncRef<ISyncList>), "_target");
         static MethodInfo BagEditorAddNewPressed = AccessTools.Method(typeof(BagEditor), "AddNewPressed");
         static MethodInfo ListEditorAddNewPressed = AccessTools.Method(typeof(ListEditor), "AddNewPressed");
+        static FieldInfo _targetContainer = AccessTools.Field(typeof(WorkerInspector), "_targetContainer");
 
-        [HarmonyPatch(typeof(SceneInspector))]
+        [HarmonyPatch(typeof(SceneInspector), "OnAttach")]
+        class StupidInspectorFixupPatch
+        {
+            public static void Postfix(SceneInspector __instance)
+            {
+                // onchanges triggers 1 update later, when we need 0 updates so it doesn't sync
+                __instance.RunInUpdates(0, () => {
+                    Traverse.Create(__instance).Method("OnChanges").GetValue();
+                });
+            }
+        }
+
+        [HarmonyPatch]
         class SceneInspector_Patch
         {
-            [HarmonyPatch("OnAttach")]
-            [HarmonyPostfix]
-            public static void Prefix(SceneInspector __instance)
+            public static IEnumerable<MethodInfo> TargetMethods()
             {
-                // run in updates 0 to wait until the target has been updated
-                __instance.RunInUpdates(0, () => HookMethod(__instance, true));
+                yield return AccessTools.Method(typeof(WorkerInspector), "OnChanges");
+                yield return AccessTools.Method(typeof(SceneInspector), "OnChanges");
+            }
+            public static bool IsChangedLocally(ConflictingSyncElement el)
+            {
+                return el.LastConfirmedTime == el.LastHostVersion || el.IsSyncDirty;
             }
 
-            [HarmonyPatch("OnChanges")]
-            [HarmonyPrefix]
-            public static void ChangesPatch(SceneInspector __instance)
+            public static bool ShouldContinue(Worker worker)
             {
-                HookMethod(__instance);
-            }
-
-            public static void HookMethod(SceneInspector inspector, bool force = false)
-            {
-                var curCom = _currentComponent.GetValue(inspector) as SyncRef<Slot>;
-                // "IsSyncDirty" basically means that it's state has been modified but hasn't been sent over the network yet
-                if (inspector.ComponentView.IsSyncDirty || force)
+                if (worker is SceneInspector s)
                 {
-                    // This is basically the default "SceneInspector.OnChanges" function.
-                    if (curCom.Target != inspector.ComponentView.Target)
+                    return IsChangedLocally(s.ComponentView) || IsChangedLocally(s.Root);
+                }
+                else if (worker is WorkerInspector w)
+                {
+                    // doing this is weird, because we won't unregister events whenever you set a workerinspector to null.
+                    // but also this never happens by default so hope it's ok
+                    var target = _targetContainer.GetValue(w) as SyncRef<Worker>;
+                    return target.Target != null && IsChangedLocally(target);
+                }
+                return false;
+            }
+
+            public static void ResetContainer(WorkerInspector i)
+            {
+                if(!i.World.IsAuthority)
+                    (_targetContainer.GetValue(i) as SyncRef<Worker>).Target = null;
+            }
+            public static bool IsHost(SceneInspector i)
+            {
+                return i.World.IsAuthority;
+            }
+
+            public static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            {
+                var codes = instructions.ToList();
+                var rootfield = typeof(SceneInspector).GetField("Root");
+                var compfield = typeof(SceneInspector).GetField("ComponentView");
+                for (var i = 0; i < codes.Count; i++)
+                {
+                    var code = codes[i];
+                    if (code.opcode == OpCodes.Beq)
                     {
-                        if (curCom.Target != null)
+                        var code2 = codes[i - 2];
+                        if (code2.operand is FieldInfo f && (f == rootfield || f == compfield))
                         {
-                            curCom.Target.RemoveGizmo(null);
-                        }
-                        if (inspector.ComponentView.Target != null && !inspector.ComponentView.Target.IsRootSlot)
-                        {
-                            inspector.ComponentView.Target.GetGizmo(null);
-                        }
-                        var comConRoot = _componentsContentRoot.GetValue(inspector) as SyncRef<Slot>;
-                        comConRoot.Target.DestroyChildren(false, true, false, null);
-                        curCom.Target = inspector.ComponentView.Target;
-                        var comText = _componentText.GetValue(inspector) as SyncRef<Sync<string>>;
-                        SyncField<string> target4 = comText.Target;
-                        string str2 = "Slot: ";
-                        Slot target5 = curCom.Target;
-                        target4.Value = str2 + (((target5 != null) ? target5.Name : null) ?? "<i>null</i>");
-                        if (curCom.Target != null)
-                        {
-                            comConRoot.Target.AddSlot("ComponentRoot", true).AttachComponent<WorkerInspector>().SetupContainer(curCom.Target);
+                            // if (IsHost | IsChangedLocally) & !(original statement)
+                            yield return new CodeInstruction(OpCodes.Ceq);
+                            yield return new CodeInstruction(OpCodes.Ldc_I4_0);
+                            yield return new CodeInstruction(OpCodes.Ceq);
+                            yield return new CodeInstruction(OpCodes.Ldarg_0);
+                            yield return new CodeInstruction(OpCodes.Call, typeof(SceneInspector_Patch).GetMethod(nameof(IsHost)));
+                            yield return new CodeInstruction(OpCodes.Ldarg_0);
+                            yield return new CodeInstruction(OpCodes.Ldfld, code2.operand);
+                            yield return new CodeInstruction(OpCodes.Callvirt, typeof(SceneInspector_Patch).GetMethod(nameof(IsChangedLocally)));
+                            yield return new CodeInstruction(OpCodes.Or);
+                            yield return new CodeInstruction(OpCodes.And);
+                            code.opcode = OpCodes.Brfalse;
                         }
                     }
-                }
-                var curRoot = _currentRoot.GetValue(inspector) as SyncRef<Slot>;
-                var hiCurRoot = _hierarchyContentRoot.GetValue(inspector) as SyncRef<Slot>;
-                if (curRoot.Target != inspector.Root.Target && inspector.Root.IsSyncDirty)
-                {
-                    curRoot.Target = inspector.Root.Target;
-                    hiCurRoot.Target.DestroyChildren();
-                    (_rootText.GetValue(inspector) as SyncRef<Sync<string>>).Target.Value = "Root: " + (curRoot.Target?.Name ?? "<i>null</i>");
-                    if (curRoot.Target != null)
+                    yield return code;
+                    if (code.Calls(typeof(World).GetMethod("get_IsAuthority")))
                     {
-                        hiCurRoot.Target.AddSlot("HierarchyRoot").AttachComponent<SlotInspector>().Setup(curRoot.Target, curCom);
+                        // is host OR the value has been changed by local user
+                        yield return new CodeInstruction(OpCodes.Ldarg_0);
+                        yield return new CodeInstruction(OpCodes.Callvirt, typeof(SceneInspector_Patch).GetMethod("ShouldContinue"));
+                        yield return new CodeInstruction(OpCodes.Or);
+                    }
+                    if (code.StoresField(AccessTools.Field(typeof(WorkerInspector), "_currentContainer")))
+                    {
+                        // reset the container so others don't know about it
+                        yield return new CodeInstruction(OpCodes.Ldarg_0);
+                        yield return new CodeInstruction(OpCodes.Call, typeof(SceneInspector_Patch).GetMethod("ResetContainer"));
                     }
                 }
             }
@@ -191,140 +218,5 @@ namespace MyInspectors
                 return false;
             }
         }
-        /*
-        [HarmonyPatch(typeof(WorkerInspector), "BuildUIForComponent")]
-        class ComponentOrderPatch
-        {
-            // This patch might not be needed anymore but i'll keep it for safety?
-            public static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes)
-            {
-                var injectCodes = new CodeInstruction[] {
-                    new(OpCodes.Ldloc_0),
-                    new(OpCodes.Callvirt, typeof(UIBuilder).GetMethod("get_Root")),
-                    new(OpCodes.Call, typeof(ComponentOrderPatch).GetMethod("ReOrder"))
-                };
-
-                var lst = codes.ToList();
-
-                lst.InsertRange(lst.FindIndex((instruction) =>
-                    instruction.Is(OpCodes.Callvirt, typeof(UIBuilder).GetMethod("VerticalLayout", new Type[] { typeof(float), typeof(float), typeof(Alignment?) }))) + 2,
-                    injectCodes
-                );
-
-                return lst.AsEnumerable();
-            }
-
-            public static void ReOrder(Slot slot)
-            {
-                if (!slot.World.IsAuthority)
-                {
-                    slot.OrderOffset = -1;
-                }
-            }
-        }
-        */
-
-
-        // This part is for making newly added/removed components processed by local user instead of host
-        [HarmonyPatch(typeof(WorkerInspector))]
-        class WorkerInspector_Patch
-        {
-            [HarmonyPatch("OnChanges")]
-            [HarmonyPrefix]
-            public static bool Prefix(SyncRef<Worker> ____targetContainer)
-            {
-                WorkerHook(____targetContainer);
-
-                // cancel normal method, its functionality is fully replaced by WorkerHook.
-                return false;
-            }
-
-            [HarmonyPatch("SetupContainer")]
-            [HarmonyPostfix]
-            public static void Postfix(SyncRef<Worker> ____targetContainer)
-            {
-                WorkerHook(____targetContainer, true);
-            }
-
-            public static void WorkerHook(SyncRef<Worker> w, bool force = false)
-            {
-                WorkerInspector __instance = w.Parent as WorkerInspector;
-                var curConField = AccessTools.Field(typeof(WorkerInspector), "_currentContainer");
-                var tarCon = AccessTools.Field(typeof(WorkerInspector), "_targetContainer").GetValue(__instance) as SyncRef<Worker>;
-                if (tarCon.Target != null && tarCon.IsSyncDirty || force)
-                {
-                    if (curConField.GetValue(__instance) != tarCon.Target)
-                    {
-                        AccessTools.Method(__instance.GetType(), "UnregisterEvents").Invoke(__instance, null);
-                        Slot slot = tarCon.Target as Slot;
-                        User user = tarCon.Target as User;
-                        var comAdd = AccessTools.Method(__instance.GetType(), "OnComponentAdded").CreateDelegate(typeof(ComponentEvent<Component>), __instance) as ComponentEvent<Component>;
-                        var comRem = AccessTools.Method(__instance.GetType(), "OnComponentRemoved").CreateDelegate(typeof(ComponentEvent<Component>), __instance) as ComponentEvent<Component>;
-                        var usrComAdd = AccessTools.Method(__instance.GetType(), "UserComponentAdded").CreateDelegate(typeof(ComponentEvent<UserComponent>), __instance) as ComponentEvent<UserComponent>;
-                        var usrComRem = AccessTools.Method(__instance.GetType(), "UserComponentRemoved").CreateDelegate(typeof(ComponentEvent<UserComponent>), __instance) as ComponentEvent<UserComponent>;
-                        var streamAdd = AccessTools.Method(__instance.GetType(), "StreamAdded").CreateDelegate(typeof(Action<Stream>), __instance) as Action<Stream>;
-                        var streamRem = AccessTools.Method(__instance.GetType(), "StreamRemoved").CreateDelegate(typeof(Action<Stream>), __instance) as Action<Stream>;
-
-                        if (slot != null)
-                        {
-                            slot.ComponentAdded += comAdd;
-                            slot.ComponentRemoved += comRem;
-                        }
-                        if (user != null)
-                        {
-                            user.ComponentAdded += usrComAdd;
-                            user.ComponentRemoved += usrComRem;
-                            user.StreamAdded += streamAdd;
-                            user.StreamRemoved += streamRem;
-                        }
-                        curConField.SetValue(__instance, tarCon.Target);
-                    }
-                    tarCon.Target = null;
-                }
-            }
-        }
-
-        /*
-         * I was trying to do some really weird stuff with registering change events instead of using the normal "OnChanges" method.
-         * 
-        [HarmonyPatch(typeof(SceneInspector))]
-        [HarmonyPatch("OnStart")]
-        class SceneInspector_OnStart_Patch
-        {
-            public static void Prefix(SceneInspector __instance)
-            {
-                Msg("hooking field events");
-                __instance.ComponentView.Changed += ComponentView_Changed;
-                __instance.ComponentView.OnReferenceChange += ComponentView_OnReferenceChange;
-                __instance.ComponentView.OnObjectAvailable += ComponentView_OnObjectAvailable;
-                __instance.ComponentView.OnTargetChange += ComponentView_OnTargetChange;
-                __instance.ComponentView.OnValueChange += ComponentView_OnValueChange;
-            }
-
-            private static void ComponentView_Changed(IChangeable obj)
-            {
-                var reference = (SyncRef<Slot>)obj;
-                Msg("chngable changed " + (reference.LastModifyingUser != null ? reference.LastModifyingUser.UserName : null));
-            }
-
-            private static void ComponentView_OnReferenceChange(SyncRef<Slot> reference)
-            {
-                Msg("ref chng " + (reference.LastModifyingUser != null ? reference.LastModifyingUser.UserName : null));
-
-            }
-            private static void ComponentView_OnObjectAvailable(SyncRef<Slot> reference)
-            {
-                Msg("obj here " + (reference.LastModifyingUser != null ? reference.LastModifyingUser.UserName : null));
-            }
-            private static void ComponentView_OnTargetChange(SyncRef<Slot> reference)
-            {
-                Msg("trgt chng " + (reference.LastModifyingUser != null ? reference.LastModifyingUser.UserName : null));
-            }
-            private static void ComponentView_OnValueChange(SyncField<RefID> syncField)
-            {
-                Msg("val chng " + (syncField.LastModifyingUser != null ? syncField.LastModifyingUser.UserName : null));
-            }
-        }
-        */
     }
 }
