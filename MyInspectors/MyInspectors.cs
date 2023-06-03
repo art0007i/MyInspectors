@@ -34,15 +34,19 @@ namespace MyInspectors
         static MethodInfo ListEditorAddNewPressed = AccessTools.Method(typeof(ListEditor), "AddNewPressed");
         static FieldInfo _targetContainer = AccessTools.Field(typeof(WorkerInspector), "_targetContainer");
 
-        [HarmonyPatch(typeof(SceneInspector), "OnAttach")]
+        // patching 'hot' code. but like idk how else to do it
+        [HarmonyPatch(typeof(ComponentBase<Component>), "OnAwake")]
         class StupidInspectorFixupPatch
         {
-            public static void Postfix(SceneInspector __instance)
+            public static void Postfix(object __instance)
             {
-                // onchanges triggers 1 update later, when we need 0 updates so it doesn't sync
-                __instance.RunInUpdates(0, () => {
-                    Traverse.Create(__instance).Method("OnChanges").GetValue();
-                });
+                if(__instance is SceneInspector i)
+                {
+                    // onchanges triggers 1 update later, when we need 0 updates so it doesn't sync
+                    i.RunInUpdates(0, () => {
+                        Traverse.Create(__instance).Method("OnChanges").GetValue();
+                    });
+                }
             }
         }
 
