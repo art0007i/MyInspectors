@@ -24,14 +24,6 @@ namespace MyInspectors
             Harmony harmony = new Harmony("me.art0007i.MyInspectors");
             harmony.PatchAll();
         }
-
-        static MethodInfo OnChanges = AccessTools.Method(typeof(SlotInspector), "OnChanges");
-        static FieldInfo slot_target = AccessTools.Field(typeof(SyncRef<Slot>), "_target");
-        static FieldInfo user_target = AccessTools.Field(typeof(SyncRef<User>), "_target");
-        static FieldInfo syncBag_target = AccessTools.Field(typeof(SyncRef<ISyncBag>), "_target");
-        static FieldInfo synclist_target = AccessTools.Field(typeof(SyncRef<ISyncList>), "_target");
-        static MethodInfo BagEditorAddNewPressed = AccessTools.Method(typeof(BagEditor), "AddNewPressed");
-        static MethodInfo ListEditorAddNewPressed = AccessTools.Method(typeof(ListEditor), "AddNewPressed");
         static FieldInfo _targetContainer = AccessTools.Field(typeof(WorkerInspector), "_targetContainer");
 
         // patching 'hot' code. but like idk how else to do it
@@ -91,6 +83,8 @@ namespace MyInspectors
 
             public static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
             {
+                FieldInfo _currentContainer = AccessTools.Field(typeof(WorkerInspector), "_currentContainer");
+
                 var codes = instructions.ToList();
                 var rootfield = typeof(SceneInspector).GetField("Root");
                 var compfield = typeof(SceneInspector).GetField("ComponentView");
@@ -122,19 +116,58 @@ namespace MyInspectors
                     {
                         // is host OR the value has been changed by local user
                         yield return new CodeInstruction(OpCodes.Ldarg_0);
-                        yield return new CodeInstruction(OpCodes.Callvirt, typeof(SceneInspector_Patch).GetMethod("ShouldContinue"));
+                        yield return new CodeInstruction(OpCodes.Callvirt, typeof(SceneInspector_Patch).GetMethod(nameof(ShouldContinue)));
                         yield return new CodeInstruction(OpCodes.Or);
                     }
-                    if (code.StoresField(AccessTools.Field(typeof(WorkerInspector), "_currentContainer")))
+                    if (code.StoresField(_currentContainer))
                     {
                         // reset the container so others don't know about it
                         yield return new CodeInstruction(OpCodes.Ldarg_0);
-                        yield return new CodeInstruction(OpCodes.Call, typeof(SceneInspector_Patch).GetMethod("ResetContainer"));
+                        yield return new CodeInstruction(OpCodes.Call, typeof(SceneInspector_Patch).GetMethod(nameof(ResetContainer)));
                     }
                 }
             }
         }
 
+        [HarmonyPatch(typeof(SyncField<RefID>), "InternalSetValue")]
+        class SyncField_Patch
+        {
+            static internal bool Prefix(SyncField<RefID> __instance, ref bool sync)
+            {
+                if (__instance == null || __instance.World.IsAuthority || !IsAlocatingUser(__instance)) return true;
+
+                //doing this instead of a switch to support inherited classes
+                var parent = __instance.Parent;
+                var parentType = parent.GetType();
+                if (typeof(SlotInspector).IsAssignableFrom(parentType))
+                {
+                    if(!(__instance is SyncRef<Slot>) || ((SlotInspector)parent).GetSyncMember("_rootSlot") != __instance)
+                        return true;
+                }
+                else if (typeof(UserInspectorItem).IsAssignableFrom(parentType))
+                {
+                    if (!(__instance is SyncRef<User>) || ((UserInspectorItem)parent).GetSyncMember("_user") != __instance)
+                        return true;
+                }
+                else if (typeof(BagEditor).IsAssignableFrom(parentType))
+                {
+                    if (!(__instance is SyncRef<ISyncBag>) || ((BagEditor)parent).GetSyncMember("_targetBag") != __instance)
+                        return true;
+                }
+                else if (typeof(ListEditor).IsAssignableFrom(parentType))
+                {
+                    if (!(__instance is SyncRef<ISyncList>) || ((ListEditor)parent).GetSyncMember("_targetList") != __instance)
+                        return true;
+                }
+                else return true;
+
+
+                //todo: determine using a stack trace if we are being called by a deserialization function;
+                sync = false;
+                return true;
+            }
+        }
+        
         static bool IsAlocatingUser(IWorldElement element) => element.ReferenceID.User == element.World.LocalUser.AllocationID;
 
         [HarmonyPatch]
@@ -168,59 +201,6 @@ namespace MyInspectors
                         yield return code;
                     }
                 }
-            }
-        }
-
-        [HarmonyPatch(typeof(SlotInspector), nameof(SlotInspector.Setup))]
-        class SlotInspector_Patch
-        {
-            static bool Prefix(SlotInspector __instance, Slot target, SyncRef<Slot> selectionReference, int depth, RelayRef<SyncRef<Slot>> ____selectionReference, Sync<int> ____depth, SyncRef<Slot> ____rootSlot)
-            {
-                if (__instance.World.IsAuthority) return true;
-                ____selectionReference.Target = selectionReference;
-                ____depth.Value = depth;
-                slot_target.SetValue(____rootSlot, target); //i think there is some proper way to set a local value but i forget it.
-
-                OnChanges.Invoke(__instance, null);
-                return false;
-            }
-        }
-
-        [HarmonyPatch(typeof(UserInspectorItem), nameof(UserInspectorItem.Setup))]
-        class UserInspectorItem_Patch
-        {
-            static bool Prefix(UserInspectorItem __instance, User user, SyncRef<User> ____user)
-            {
-                if (__instance.World.IsAuthority) return true;
-                user_target.SetValue(____user, user);
-                return false;
-            }
-        }
-        //these 2 could have some extra stuff done so they work after being loaded from a non local save. its not really worth it imo but something worth noting
-        //from looking into it some good options are FrooxEngine.MaterialRelay.MaterialRefs and comp slot bag 
-        [HarmonyPatch(typeof(BagEditor), nameof(BagEditor.Setup))]
-        class BagEditor_Patch
-        {
-            static bool Prefix(BagEditor __instance, ISyncBag target, Button button, SyncRef<ISyncBag> ____targetBag, SyncRef<Button> ____addNewButton)
-            {
-                if (__instance.World.IsAuthority) return true;
-                ____addNewButton.Target = button;
-                syncBag_target.SetValue(____targetBag, target);
-                button.Pressed.Target = BagEditorAddNewPressed.CreateDelegate(typeof(ButtonEventHandler), __instance) as ButtonEventHandler;
-                return false;
-            }
-        }
-
-        [HarmonyPatch(typeof(ListEditor), nameof(ListEditor.Setup))]
-        class ListEditor_Patch
-        {
-            static bool Prefix(ListEditor __instance, ISyncList target, Button button, SyncRef<ISyncList> ____targetList, SyncRef<Button> ____addNewButton)
-            {
-                if (__instance.World.IsAuthority) return true;
-                ____addNewButton.Target = button;
-                synclist_target.SetValue(____targetList, target);
-                button.Pressed.Target = ListEditorAddNewPressed.CreateDelegate(typeof(ButtonEventHandler), __instance) as ButtonEventHandler;
-                return false;
             }
         }
     }
