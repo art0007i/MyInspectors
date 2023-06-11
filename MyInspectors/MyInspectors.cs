@@ -10,6 +10,7 @@ using FrooxEngine.LogiX;
 using BaseX;
 using System.Reflection.Emit;
 using FrooxEngine.UIX;
+using System.Diagnostics;
 
 namespace MyInspectors
 {
@@ -25,6 +26,9 @@ namespace MyInspectors
             harmony.PatchAll();
         }
         static FieldInfo _targetContainer = AccessTools.Field(typeof(WorkerInspector), "_targetContainer");
+        static FieldInfo _value = AccessTools.Field(typeof(SyncField<RefID>), "_value");
+        static MethodInfo ValueChanged = AccessTools.Method(typeof(SyncField<RefID>), "ValueChanged");
+        static Dictionary<SyncField<RefID>, RefID> RemoteValues = new();
 
         // patching 'hot' code. but like idk how else to do it
         [HarmonyPatch(typeof(ComponentBase<Component>), "OnAwake")]
@@ -32,10 +36,11 @@ namespace MyInspectors
         {
             public static void Postfix(object __instance)
             {
-                if(__instance is SceneInspector i)
+                if (__instance is SceneInspector i)
                 {
                     // onchanges triggers 1 update later, when we need 0 updates so it doesn't sync
-                    i.RunInUpdates(0, () => {
+                    i.RunInUpdates(0, () =>
+                    {
                         Traverse.Create(__instance).Method("OnChanges").GetValue();
                     });
                 }
@@ -73,7 +78,7 @@ namespace MyInspectors
 
             public static void ResetContainer(WorkerInspector i)
             {
-                if(!i.World.IsAuthority)
+                if (!i.World.IsAuthority)
                     (_targetContainer.GetValue(i) as SyncRef<Worker>).Target = null;
             }
             public static bool IsHost(SceneInspector i)
@@ -132,76 +137,149 @@ namespace MyInspectors
         [HarmonyPatch(typeof(SyncField<RefID>), "InternalSetValue")]
         class SyncField_Patch
         {
-            static internal bool Prefix(SyncField<RefID> __instance, ref bool sync)
+            static internal bool Prefix(SyncField<RefID> __instance, ref RefID value, ref bool sync, ref bool change)
             {
                 if (__instance == null || __instance.World.IsAuthority || !IsAlocatingUser(__instance)) return true;
 
-                //doing this instead of a switch to support inherited classes
                 var parent = __instance.Parent;
-                var parentType = parent.GetType();
-                if (typeof(SlotInspector).IsAssignableFrom(parentType))
+                var editType = EditorType(parent.GetType());
+                switch (editType)
                 {
-                    if(!(__instance is SyncRef<Slot>) || ((SlotInspector)parent).GetSyncMember("_rootSlot") != __instance)
+                    case EditType.slot:
+                        if (!(__instance is SyncRef<Slot>) || ((SlotInspector)parent).GetSyncMember("_rootSlot") != __instance)
+                            return true;
+                        break;
+                    case EditType.user:
+                        if (!(__instance is SyncRef<User>) || ((UserInspectorItem)parent).GetSyncMember("_user") != __instance)
+                            return true;
+                        break;
+                    case EditType.bag:
+                        if (!(__instance is SyncRef<ISyncBag>) || ((BagEditor)parent).GetSyncMember("_targetBag") != __instance)
+                            return true;
+                        break;
+                    case EditType.list:
+                        if (!(__instance is SyncRef<ISyncList>) || ((ListEditor)parent).GetSyncMember("_targetList") != __instance)
+                            return true;
+                        break;
+                    default:
                         return true;
                 }
-                else if (typeof(UserInspectorItem).IsAssignableFrom(parentType))
-                {
-                    if (!(__instance is SyncRef<User>) || ((UserInspectorItem)parent).GetSyncMember("_user") != __instance)
-                        return true;
-                }
-                else if (typeof(BagEditor).IsAssignableFrom(parentType))
-                {
-                    if (!(__instance is SyncRef<ISyncBag>) || ((BagEditor)parent).GetSyncMember("_targetBag") != __instance)
-                        return true;
-                }
-                else if (typeof(ListEditor).IsAssignableFrom(parentType))
-                {
-                    if (!(__instance is SyncRef<ISyncList>) || ((ListEditor)parent).GetSyncMember("_targetList") != __instance)
-                        return true;
-                }
-                else return true;
-
-
-                //todo: determine using a stack trace if we are being called by a deserialization function;
                 sync = false;
+
+                //maybe i should be using the IsChangedLocally function somehow to determine if its a local change or not but this is just what came first to mind and works for now.
+                //index 2 because the first one is our patch
+                var caller = new StackTrace().GetFrame(2).GetMethod();
+                //comparing by name instead of ref since im not sure how this will work with a non generic method in a generic class. may be worth testing later.
+                if (caller.Name == "InternalDecodeDelta" || caller.Name == "InternalEncodeFull")
+                {
+                    if (!RemoteValues.ContainsKey(__instance))
+                    {
+                        ((Worker)__instance.Parent).Disposing += (worker) => RemoteValues.Remove(__instance);//guess i could restructure this to not create runtime delegates. in theory it would use less memory but would probably also be very slightly slower
+                        RemoteValues[__instance] = value;
+                    }
+                    else if ((editType == EditType.bag || editType == EditType.list) && RemoteValues[__instance] == RefID.Null) RemoteValues[__instance] = value;//even if the sync is null itl still act like what ever the frist non null value it had
+                    else RemoteValues[__instance] = value;
+                }
+                else if (RemoteValues.ContainsKey(__instance))
+                {
+                    sync = true;
+                    if (editType == EditType.slot || editType == EditType.user)
+                    {
+                        var curval = value;
+                        value = RefID.Null; //sync null
+                        RemoteValues[__instance] = value;
+                        change = false;
+                        __instance.World.RunInUpdates(1, () => { _value.SetValue(__instance, curval); ValueChanged.Invoke(__instance, null); });
+                    }
+                }
+
                 return true;
             }
         }
-        
-        static bool IsAlocatingUser(IWorldElement element) => element.ReferenceID.User == element.World.LocalUser.AllocationID;
 
-        [HarmonyPatch]
-        class Transpiler_AlocatingUser
+        //doing this to support inherited classes
+        static EditType EditorType(Type type)
         {
-            static IEnumerable<MethodBase> TargetMethods()
+            if (typeof(SlotInspector).IsAssignableFrom(type)) return EditType.slot;
+            else if (typeof(UserInspectorItem).IsAssignableFrom(type)) return EditType.user;
+            else if (typeof(BagEditor).IsAssignableFrom(type)) return EditType.bag;
+            else if (typeof(ListEditor).IsAssignableFrom(type)) return EditType.list;
+            return (EditType)(-1);
+        }
+        enum EditType
+        {
+            slot,
+            user,
+            bag,
+            list
+        }
+        static bool IsAlocatingUser(IWorldElement element) => element.ReferenceID.User == element.World.LocalUser.AllocationID;
+        static bool ShouldBuildM(Worker element, string Field)
+        {
+            if (!IsAlocatingUser(element)) return false;
+            var field = (SyncField<RefID>)element.GetSyncMember(Field);
+            if (RemoteValues.ContainsKey(field) && RemoteValues[field] != RefID.Null)
+                return false;
+            return true;
+        }
+        //guess i could make the transpiler pass the relevant field.
+        static IEnumerable<CodeInstruction> Editor_OnChanges_Transpiler(IEnumerable<CodeInstruction> codes, MethodInfo ReplacementMethod)
+        {
+            int hit = 0;
+            foreach (var code in codes)
             {
-                yield return AccessTools.Method(typeof(SlotInspector), "OnChanges");
-                yield return AccessTools.Method(typeof(UserInspectorItem), "OnChanges");
-                yield return AccessTools.Method(typeof(BagEditor), "OnChanges");
-                yield return AccessTools.Method(typeof(ListEditor), "OnChanges");
-            }
-            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes)
-            {
-                int hit = 0;
-                foreach (var code in codes)
+                if (hit <= 0 && (code.operand as MethodInfo)?.Name == "get_World")
                 {
-                    if (hit <= 0 && (code.operand as MethodInfo)?.Name == "get_World")
-                    {
-                        hit++;
-                        code.operand = AccessTools.Method(typeof(MyInspectors), nameof(IsAlocatingUser));
-                        yield return code;
-                    }
-                    else if (hit == 1)
-                    {
-                        hit++;
-                        yield return new(OpCodes.Nop);
-                    }
-                    else
-                    {
-                        yield return code;
-                    }
+                    hit++;
+                    code.operand = ReplacementMethod;
+                    yield return code;
+                }
+                else if (hit == 1)
+                {
+                    hit++;
+                    yield return new(OpCodes.Nop);
+                }
+                else
+                {
+                    yield return code;
                 }
             }
+        }
+
+        [HarmonyPatch(typeof(SlotInspector), "OnChanges")]
+        class SlotInspector_Patch
+        {
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Method(typeof(SlotInspector_Patch), nameof(ShouldBuild)));
+            static bool ShouldBuild(SlotInspector element) => ShouldBuildM(element, "_rootSlot");
+        }
+        [HarmonyPatch(typeof(UserInspectorItem), "OnChanges")]
+        class UserInspectorItem_Patch
+        {
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Method(typeof(UserInspectorItem_Patch), nameof(ShouldBuild)));
+            static bool ShouldBuild(UserInspectorItem element) => ShouldBuildM(element, "_user");
+        }
+        [HarmonyPatch(typeof(BagEditor))]
+        class BagEditor_Patch
+        {
+            [HarmonyTranspiler]
+            [HarmonyPatch("OnChanges")]
+            static IEnumerable<CodeInstruction> OnChangesTranspiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Method(typeof(BagEditor_Patch), nameof(ShouldBuild)));
+            static bool ShouldBuild(BagEditor element) => ShouldBuildM(element, "_targetBag");
+
+            [HarmonyPrefix]
+            [HarmonyPatch("Target_ElementAdded")]
+            static bool AddedPrefix(BagEditor __instance) => ShouldBuild(__instance);
+
+        }
+        [HarmonyPatch(typeof(ListEditor), "OnChanges")]
+        class ListEditor_Patch
+        {
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Method(typeof(ListEditor_Patch), nameof(ShouldBuild)));
+            static bool ShouldBuild(ListEditor element) => ShouldBuildM(element, "_targetList");
+
+            [HarmonyPrefix]
+            [HarmonyPatch("Target_ElementsAdded")]
+            static bool AddedPrefix(ListEditor __instance) => ShouldBuild(__instance);
         }
     }
 }
