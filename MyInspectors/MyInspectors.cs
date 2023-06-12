@@ -139,7 +139,7 @@ namespace MyInspectors
         {
             static internal bool Prefix(SyncField<RefID> __instance, ref RefID value, ref bool sync, ref bool change)
             {
-                if (__instance == null || __instance.World.IsAuthority || !IsAlocatingUser(__instance)) return true;
+                if (__instance == null || __instance.World.IsAuthority) return true;
 
                 var parent = __instance.Parent;
                 var editType = EditorType(parent.GetType());
@@ -227,11 +227,9 @@ namespace MyInspectors
             if (element == null || element.IsRemoved) return true;
             return false;
         }
-        static bool IsAlocatingUser(IWorldElement element) => element.ReferenceID.User == element.World.LocalUser.AllocationID;
         static bool ShouldBuild(SyncField<RefID> field)
         {
             if (field.World.IsAuthority) return true; //not explicitly needed but this way we dont need to search thru the RemoteValues dict
-            if (!IsAlocatingUser(field)) return false;
             if (RemoteValues.ContainsKey(field) && !IsNullOrDisposed(RemoteValues[field], field.World)) return false;
             return true;
         }
