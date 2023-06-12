@@ -177,19 +177,26 @@ namespace MyInspectors
                         ((Worker)__instance.Parent).Disposing += (worker) => RemoteValues.Remove(__instance);//guess i could restructure this to not create runtime delegates. in theory it would use less memory but would probably also be very slightly slower
                         RemoteValues[__instance] = value;
                     }
-                    else if ((editType == EditType.bag || editType == EditType.list) && RemoteValues[__instance] == RefID.Null) RemoteValues[__instance] = value;//even if the sync is null itl still act like what ever the frist non null value it had
+                    else if ((editType == EditType.bag || editType == EditType.list) && RemoteValues[__instance] == RefID.Null) RemoteValues[__instance] = value;//even if the sync is null itl still act like what ever the first non null value it had even if that first value no longer exists 
                     else RemoteValues[__instance] = value;
                 }
                 else if (RemoteValues.ContainsKey(__instance))
                 {
-                    sync = true;
                     if (editType == EditType.slot || editType == EditType.user)
                     {
-                        var curval = value;
-                        value = RefID.Null; //sync null
-                        RemoteValues[__instance] = value;
-                        change = false;
-                        __instance.World.RunInUpdates(1, () => { _value.SetValue(__instance, curval); ValueChanged.Invoke(__instance, null); });
+                        if (RemoteValues[__instance] != RefID.Null)
+                        {
+                            sync = true;
+                            var curval = value;
+                            value = RefID.Null; //sync null
+                            RemoteValues[__instance] = value;
+                            change = false;
+                            __instance.World.RunInUpdates(1, () => { _value.SetValue(__instance, curval); ValueChanged.Invoke(__instance, null); });
+                        }
+                    }
+                    else
+                    { 
+                        sync = true; //changing it wont matter since its already setup remotely
                     }
                 }
 
@@ -213,17 +220,23 @@ namespace MyInspectors
             bag,
             list
         }
-        static bool IsAlocatingUser(IWorldElement element) => element.ReferenceID.User == element.World.LocalUser.AllocationID;
-        static bool ShouldBuildM(Worker element, string Field)
+        static bool IsNullOrDisposed(RefID id, World world)
         {
-            if (!IsAlocatingUser(element)) return false;
-            var field = (SyncField<RefID>)element.GetSyncMember(Field);
-            if (RemoteValues.ContainsKey(field) && RemoteValues[field] != RefID.Null)
-                return false;
+            if (id == RefID.Null) return true;
+            var element = world.ReferenceController.GetObjectOrNull(id);
+            if (element == null || element.IsRemoved) return true;
+            return false;
+        }
+        static bool IsAlocatingUser(IWorldElement element) => element.ReferenceID.User == element.World.LocalUser.AllocationID;
+        static bool ShouldBuild(SyncField<RefID> field)
+        {
+            if (field.World.IsAuthority) return true; //not explicitly needed but this way we dont need to search thru the RemoteValues dict
+            if (!IsAlocatingUser(field)) return false;
+            if (RemoteValues.ContainsKey(field) && !IsNullOrDisposed(RemoteValues[field], field.World)) return false;
             return true;
         }
-        //guess i could make the transpiler pass the relevant field.
-        static IEnumerable<CodeInstruction> Editor_OnChanges_Transpiler(IEnumerable<CodeInstruction> codes, MethodInfo ReplacementMethod)
+        static MethodInfo ShouldBuildInfo = AccessTools.Method(typeof(MyInspectors), nameof(ShouldBuild));
+        static IEnumerable<CodeInstruction> Editor_OnChanges_Transpiler(IEnumerable<CodeInstruction> codes, FieldInfo targetField)
         {
             int hit = 0;
             foreach (var code in codes)
@@ -231,13 +244,12 @@ namespace MyInspectors
                 if (hit <= 0 && (code.operand as MethodInfo)?.Name == "get_World")
                 {
                     hit++;
-                    code.operand = ReplacementMethod;
-                    yield return code;
+                    yield return new(OpCodes.Ldfld, targetField);
+                    yield return new(OpCodes.Call, ShouldBuildInfo);
                 }
                 else if (hit == 1)
                 {
-                    hit++;
-                    yield return new(OpCodes.Nop);
+                    hit++; //skip an instruction in codes
                 }
                 else
                 {
@@ -249,37 +261,33 @@ namespace MyInspectors
         [HarmonyPatch(typeof(SlotInspector), "OnChanges")]
         class SlotInspector_Patch
         {
-            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Method(typeof(SlotInspector_Patch), nameof(ShouldBuild)));
-            static bool ShouldBuild(SlotInspector element) => ShouldBuildM(element, "_rootSlot");
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(SlotInspector), "_rootSlot"));
         }
         [HarmonyPatch(typeof(UserInspectorItem), "OnChanges")]
         class UserInspectorItem_Patch
         {
-            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Method(typeof(UserInspectorItem_Patch), nameof(ShouldBuild)));
-            static bool ShouldBuild(UserInspectorItem element) => ShouldBuildM(element, "_user");
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(UserInspectorItem), "_user"));
         }
         [HarmonyPatch(typeof(BagEditor))]
         class BagEditor_Patch
         {
             [HarmonyTranspiler]
             [HarmonyPatch("OnChanges")]
-            static IEnumerable<CodeInstruction> OnChangesTranspiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Method(typeof(BagEditor_Patch), nameof(ShouldBuild)));
-            static bool ShouldBuild(BagEditor element) => ShouldBuildM(element, "_targetBag");
+            static IEnumerable<CodeInstruction> OnChangesTranspiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(BagEditor), "_targetBag"));
 
             [HarmonyPrefix]
             [HarmonyPatch("Target_ElementAdded")]
-            static bool AddedPrefix(BagEditor __instance) => ShouldBuild(__instance);
+            static bool AddedPrefix(SyncField<RefID> ____targetBag) => ShouldBuild(____targetBag);
 
         }
         [HarmonyPatch(typeof(ListEditor), "OnChanges")]
         class ListEditor_Patch
         {
-            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Method(typeof(ListEditor_Patch), nameof(ShouldBuild)));
-            static bool ShouldBuild(ListEditor element) => ShouldBuildM(element, "_targetList");
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(ListEditor), "_targetList"));
 
             [HarmonyPrefix]
             [HarmonyPatch("Target_ElementsAdded")]
-            static bool AddedPrefix(ListEditor __instance) => ShouldBuild(__instance);
+            static bool AddedPrefix(SyncField<RefID> ____targetList) => ShouldBuild(____targetList);
         }
     }
 }
