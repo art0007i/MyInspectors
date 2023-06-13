@@ -7,10 +7,14 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using FrooxEngine;
 using FrooxEngine.LogiX;
+using FrooxEngine.LogiX.Operators;
+using FrooxEngine.LogiX.WorldModel;
 using BaseX;
 using System.Reflection.Emit;
 using FrooxEngine.UIX;
 using System.Diagnostics;
+using FrooxEngine.LogiX.Operators;
+using FrooxEngine.LogiX.Data;
 
 namespace MyInspectors
 {
@@ -257,9 +261,32 @@ namespace MyInspectors
         }
 
         [HarmonyPatch(typeof(SlotInspector), "OnChanges")]
-        class SlotInspector_Patch
+        class SlotInspector_OnChanges_Patch
         {
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(SlotInspector), "_rootSlot"));
+            static void Postfix(SyncRef<TextExpandIndicator> ____expanderIndicator, SyncRef<Slot> ____rootSlot)
+            {
+                if (____expanderIndicator.World.IsAuthority) return;
+                TextExpandIndicator textexp = ____expanderIndicator.Target;
+                if (textexp.Empty.IsLinked) return;
+                textexp.CustomEmptyCheck.Target = null; //use default empty check
+                var logixSlot = textexp.Slot;
+                var stringNode = logixSlot.AttachComponent<ValueRegister<string>>();
+                var childCountNode = logixSlot.AttachComponent<ChildrenCount>();
+                var equalsNode = logixSlot.AttachComponent<Equals_Int>();
+                var conditionalNode = logixSlot.AttachComponent<Conditional_String>();
+                var referenceNode = logixSlot.AttachComponent<ReferenceNode<Slot>>();
+                var driverNode = logixSlot.AttachComponent<DriverNode<string>>();
+                stringNode.Value.Value = textexp.Empty.Value;
+                referenceNode.RefTarget.Target = ____rootSlot.Target;
+                childCountNode.Instance.Target = referenceNode;
+                equalsNode.A.Target = childCountNode;
+                conditionalNode.Condition.Target = equalsNode;
+                conditionalNode.OnTrue.Target = stringNode;
+                conditionalNode.OnFalse.Target = textexp.Closed;
+                driverNode.DriveTarget.Target = textexp.Empty;
+                driverNode.Source.Target = conditionalNode;
+            }
         }
         [HarmonyPatch(typeof(UserInspectorItem), "OnChanges")]
         class UserInspectorItem_Patch
