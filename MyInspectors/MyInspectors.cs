@@ -7,14 +7,13 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using FrooxEngine;
 using FrooxEngine.LogiX;
+using FrooxEngine.LogiX.Data;
 using FrooxEngine.LogiX.Operators;
 using FrooxEngine.LogiX.WorldModel;
 using BaseX;
 using System.Reflection.Emit;
 using FrooxEngine.UIX;
 using System.Diagnostics;
-using FrooxEngine.LogiX.Operators;
-using FrooxEngine.LogiX.Data;
 
 namespace MyInspectors
 {
@@ -199,7 +198,7 @@ namespace MyInspectors
                         }
                     }
                     else
-                    { 
+                    {
                         sync = true; //changing it wont matter since its already setup remotely
                     }
                 }
@@ -293,26 +292,82 @@ namespace MyInspectors
         {
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(UserInspectorItem), "_user"));
         }
-        [HarmonyPatch(typeof(BagEditor))]
+        //maybe what ui has been generated under an editor should be cashed
+        [HarmonyPatch(typeof(BagEditor), "OnChanges")]
         class BagEditor_Patch
         {
-            [HarmonyTranspiler]
-            [HarmonyPatch("OnChanges")]
-            static IEnumerable<CodeInstruction> OnChangesTranspiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(BagEditor), "_targetBag"));
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(BagEditor), "_targetBag"));
 
             [HarmonyPrefix]
             [HarmonyPatch("Target_ElementAdded")]
-            static bool AddedPrefix(SyncField<RefID> ____targetBag) => ShouldBuild(____targetBag);
+            static bool AddedPrefix(BagEditor _instance, SyncField<RefID> ____targetBag, IWorldElement element)
+            {
+                if (!ShouldBuild(____targetBag)) return false;
+                foreach (var child in _instance.Slot.Children)
+                {
+                    var comp = child.GetComponent<BagEditorItem>();
+                    if (comp != null)
+                    {
+                        if (comp.Item.Target == element)
+                        {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            }
 
         }
         [HarmonyPatch(typeof(ListEditor), "OnChanges")]
         class ListEditor_Patch
         {
+            static MethodInfo BuildListItem = AccessTools.Method(typeof(ListEditor), "BuildListItem");
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(ListEditor), "_targetList"));
 
             [HarmonyPrefix]
-            [HarmonyPatch("Target_ElementsAdded")]
-            static bool AddedPrefix(SyncField<RefID> ____targetList) => ShouldBuild(____targetList);
+            [HarmonyPatch("Target_ElementsAdded")] //maybe a better strat here is to transpile Target_ElementsAdded to not create a slot then just prefix BuildListItem
+            static bool AddedPrefix(ListEditor _instance, SyncField<RefID> ____targetList, ISyncList list, int startIndex, int count)
+            {
+                if (!ShouldBuild(____targetList)) return false;
+                if (count == 1) //we can be more efficient and use more original code.
+                {
+                    var element = list.GetElement(startIndex);
+                    foreach (var child in _instance.Slot.Children)
+                    {
+                        var source = child[0].GetComponent<ReferenceProxySource>();
+                        if (source != null)
+                        {
+                            if (source.Reference.Target == element) return false;
+                        }
+                    }
+                    return true;
+                }
+                else
+                {
+                    HashSet<IWorldElement> built = new();
+                    foreach (var child in _instance.Slot.Children)
+                    {
+                        var source = child[0].GetComponent<ReferenceProxySource>();
+                        if (source != null)
+                        {
+                            built.Add(source.Reference.Target);
+                        }
+                    }
+
+                    _instance.World?.RunSynchronously(delegate
+                        {
+                            for (int i = startIndex; i < startIndex + count; i++)
+                            {
+                                var element = list.GetElement(i);
+                                if (built.Contains(element)) continue;
+                                Slot root = _instance.Slot.InsertSlot(i, "Element");
+                                BuildListItem.Invoke(_instance, new object[] { list, i, root });
+                            }
+                        });
+                }
+
+                return false;
+            }
         }
     }
 }
