@@ -300,10 +300,10 @@ namespace MyInspectors
 
             [HarmonyPrefix]
             [HarmonyPatch("Target_ElementAdded")]
-            static bool AddedPrefix(BagEditor _instance, SyncField<RefID> ____targetBag, IWorldElement element)
+            static bool AddedPrefix(BagEditor __instance, SyncField<RefID> ____targetBag, IWorldElement element)
             {
                 if (!ShouldBuild(____targetBag)) return false;
-                foreach (var child in _instance.Slot.Children)
+                foreach (var child in __instance.Slot.Children)
                 {
                     var comp = child.GetComponent<BagEditorItem>();
                     if (comp != null)
@@ -326,13 +326,13 @@ namespace MyInspectors
 
             [HarmonyPrefix]
             [HarmonyPatch("Target_ElementsAdded")] //maybe a better strat here is to transpile Target_ElementsAdded to not create a slot then just prefix BuildListItem
-            static bool AddedPrefix(ListEditor _instance, SyncField<RefID> ____targetList, ISyncList list, int startIndex, int count)
+            static bool AddedPrefix(ListEditor __instance, SyncField<RefID> ____targetList, ISyncList list, int startIndex, int count)
             {
                 if (!ShouldBuild(____targetList)) return false;
                 if (count == 1) //we can be more efficient and use more original code.
                 {
                     var element = list.GetElement(startIndex);
-                    foreach (var child in _instance.Slot.Children)
+                    foreach (var child in __instance.Slot.Children)
                     {
                         var source = child[0].GetComponent<ReferenceProxySource>();
                         if (source != null)
@@ -345,7 +345,7 @@ namespace MyInspectors
                 else
                 {
                     HashSet<IWorldElement> built = new();
-                    foreach (var child in _instance.Slot.Children)
+                    foreach (var child in __instance.Slot.Children)
                     {
                         var source = child[0].GetComponent<ReferenceProxySource>();
                         if (source != null)
@@ -354,14 +354,14 @@ namespace MyInspectors
                         }
                     }
 
-                    _instance.World?.RunSynchronously(delegate
+                    __instance.World?.RunSynchronously(delegate
                         {
                             for (int i = startIndex; i < startIndex + count; i++)
                             {
                                 var element = list.GetElement(i);
                                 if (built.Contains(element)) continue;
-                                Slot root = _instance.Slot.InsertSlot(i, "Element");
-                                BuildListItem.Invoke(_instance, new object[] { list, i, root });
+                                Slot root = __instance.Slot.InsertSlot(i, "Element");
+                                BuildListItem.Invoke(__instance, new object[] { list, i, root });
                             }
                         });
                 }
