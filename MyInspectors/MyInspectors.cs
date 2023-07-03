@@ -173,7 +173,7 @@ namespace MyInspectors
                 //index 2 because the first one is our patch
                 var caller = new StackTrace().GetFrame(2).GetMethod();
                 //comparing by name instead of ref since im not sure how this will work with a non generic method in a generic class. may be worth testing later.
-                if (caller.Name == "InternalDecodeDelta" || caller.Name == "InternalEncodeFull")
+                if (caller.Name == "InternalDecodeDelta" || caller.Name == "InternalDecodeFull")
                 {
                     if (!RemoteValues.ContainsKey(__instance))
                     {
