@@ -7,9 +7,13 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using FrooxEngine;
 using FrooxEngine.LogiX;
+using FrooxEngine.LogiX.Data;
+using FrooxEngine.LogiX.Operators;
+using FrooxEngine.LogiX.WorldModel;
 using BaseX;
 using System.Reflection.Emit;
 using FrooxEngine.UIX;
+using System.Diagnostics;
 
 namespace MyInspectors
 {
@@ -24,15 +28,10 @@ namespace MyInspectors
             Harmony harmony = new Harmony("me.art0007i.MyInspectors");
             harmony.PatchAll();
         }
-
-        static MethodInfo OnChanges = AccessTools.Method(typeof(SlotInspector), "OnChanges");
-        static FieldInfo slot_target = AccessTools.Field(typeof(SyncRef<Slot>), "_target");
-        static FieldInfo user_target = AccessTools.Field(typeof(SyncRef<User>), "_target");
-        static FieldInfo syncBag_target = AccessTools.Field(typeof(SyncRef<ISyncBag>), "_target");
-        static FieldInfo synclist_target = AccessTools.Field(typeof(SyncRef<ISyncList>), "_target");
-        static MethodInfo BagEditorAddNewPressed = AccessTools.Method(typeof(BagEditor), "AddNewPressed");
-        static MethodInfo ListEditorAddNewPressed = AccessTools.Method(typeof(ListEditor), "AddNewPressed");
         static FieldInfo _targetContainer = AccessTools.Field(typeof(WorkerInspector), "_targetContainer");
+        static FieldInfo _value = AccessTools.Field(typeof(SyncField<RefID>), "_value");
+        static MethodInfo ValueChanged = AccessTools.Method(typeof(SyncField<RefID>), "ValueChanged");
+        static Dictionary<SyncField<RefID>, RefID> RemoteValues = new();
 
         // patching 'hot' code. but like idk how else to do it
         [HarmonyPatch(typeof(ComponentBase<Component>), "OnAwake")]
@@ -40,10 +39,11 @@ namespace MyInspectors
         {
             public static void Postfix(object __instance)
             {
-                if(__instance is SceneInspector i)
+                if (__instance is SceneInspector i)
                 {
                     // onchanges triggers 1 update later, when we need 0 updates so it doesn't sync
-                    i.RunInUpdates(0, () => {
+                    i.RunInUpdates(0, () =>
+                    {
                         Traverse.Create(__instance).Method("OnChanges").GetValue();
                     });
                 }
@@ -81,7 +81,7 @@ namespace MyInspectors
 
             public static void ResetContainer(WorkerInspector i)
             {
-                if(!i.World.IsAuthority)
+                if (!i.World.IsAuthority)
                     (_targetContainer.GetValue(i) as SyncRef<Worker>).Target = null;
             }
             public static bool IsHost(SceneInspector i)
@@ -91,6 +91,8 @@ namespace MyInspectors
 
             public static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
             {
+                FieldInfo _currentContainer = AccessTools.Field(typeof(WorkerInspector), "_currentContainer");
+
                 var codes = instructions.ToList();
                 var rootfield = typeof(SceneInspector).GetField("Root");
                 var compfield = typeof(SceneInspector).GetField("ComponentView");
@@ -122,104 +124,248 @@ namespace MyInspectors
                     {
                         // is host OR the value has been changed by local user
                         yield return new CodeInstruction(OpCodes.Ldarg_0);
-                        yield return new CodeInstruction(OpCodes.Callvirt, typeof(SceneInspector_Patch).GetMethod("ShouldContinue"));
+                        yield return new CodeInstruction(OpCodes.Callvirt, typeof(SceneInspector_Patch).GetMethod(nameof(ShouldContinue)));
                         yield return new CodeInstruction(OpCodes.Or);
                     }
-                    if (code.StoresField(AccessTools.Field(typeof(WorkerInspector), "_currentContainer")))
+                    if (code.StoresField(_currentContainer))
                     {
                         // reset the container so others don't know about it
                         yield return new CodeInstruction(OpCodes.Ldarg_0);
-                        yield return new CodeInstruction(OpCodes.Call, typeof(SceneInspector_Patch).GetMethod("ResetContainer"));
+                        yield return new CodeInstruction(OpCodes.Call, typeof(SceneInspector_Patch).GetMethod(nameof(ResetContainer)));
                     }
                 }
             }
         }
 
-        static bool IsAlocatingUser(IWorldElement element) => element.ReferenceID.User == element.World.LocalUser.AllocationID;
-
-        [HarmonyPatch]
-        class Transpiler_AlocatingUser
+        [HarmonyPatch(typeof(SyncField<RefID>), "InternalSetValue")]
+        class SyncField_Patch
         {
-            static IEnumerable<MethodBase> TargetMethods()
+            static internal bool Prefix(SyncField<RefID> __instance, ref RefID value, ref bool sync, ref bool change)
             {
-                yield return AccessTools.Method(typeof(SlotInspector), "OnChanges");
-                yield return AccessTools.Method(typeof(UserInspectorItem), "OnChanges");
-                yield return AccessTools.Method(typeof(BagEditor), "OnChanges");
-                yield return AccessTools.Method(typeof(ListEditor), "OnChanges");
-            }
-            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes)
-            {
-                int hit = 0;
-                foreach (var code in codes)
+                if (__instance == null || __instance.World.IsAuthority) return true;
+
+                var parent = __instance.Parent;
+                var editType = EditorType(parent.GetType());
+                switch (editType)
                 {
-                    if (hit <= 0 && (code.operand as MethodInfo)?.Name == "get_World")
+                    case EditType.slot:
+                        if (!(__instance is SyncRef<Slot>) || ((SlotInspector)parent).GetSyncMember("_rootSlot") != __instance)
+                            return true;
+                        break;
+                    case EditType.user:
+                        if (!(__instance is SyncRef<User>) || ((UserInspectorItem)parent).GetSyncMember("_user") != __instance)
+                            return true;
+                        break;
+                    case EditType.bag:
+                        if (!(__instance is SyncRef<ISyncBag>) || ((BagEditor)parent).GetSyncMember("_targetBag") != __instance)
+                            return true;
+                        break;
+                    case EditType.list:
+                        if (!(__instance is SyncRef<ISyncList>) || ((ListEditor)parent).GetSyncMember("_targetList") != __instance)
+                            return true;
+                        break;
+                    default:
+                        return true;
+                }
+                sync = false;
+
+                //maybe i should be using the IsChangedLocally function somehow to determine if its a local change or not but this is just what came first to mind and works for now.
+                //index 2 because the first one is our patch
+                var caller = new StackTrace().GetFrame(2).GetMethod();
+                //comparing by name instead of ref since im not sure how this will work with a non generic method in a generic class. may be worth testing later.
+                if (caller.Name == "InternalDecodeDelta" || caller.Name == "InternalDecodeFull")
+                {
+                    if (!RemoteValues.ContainsKey(__instance))
                     {
-                        hit++;
-                        code.operand = AccessTools.Method(typeof(MyInspectors), nameof(IsAlocatingUser));
-                        yield return code;
+                        ((Worker)__instance.Parent).Disposing += (worker) => RemoteValues.Remove(__instance);//guess i could restructure this to not create runtime delegates. in theory it would use less memory but would probably also be very slightly slower
+                        RemoteValues[__instance] = value;
                     }
-                    else if (hit == 1)
+                    else if ((editType == EditType.bag || editType == EditType.list) && RemoteValues[__instance] == RefID.Null) RemoteValues[__instance] = value;//even if the sync is null itl still act like what ever the first non null value it had even if that first value no longer exists 
+                    else RemoteValues[__instance] = value;
+                }
+                else if (RemoteValues.ContainsKey(__instance))
+                {
+                    if (editType == EditType.slot || editType == EditType.user)
                     {
-                        hit++;
-                        yield return new(OpCodes.Nop);
+                        if (RemoteValues[__instance] != RefID.Null)
+                        {
+                            sync = true;
+                            var curval = value;
+                            value = RefID.Null; //sync null
+                            RemoteValues[__instance] = value;
+                            change = false;
+                            __instance.World.RunInUpdates(1, () => { _value.SetValue(__instance, curval); ValueChanged.Invoke(__instance, null); });
+                        }
                     }
                     else
                     {
-                        yield return code;
+                        sync = true; //changing it wont matter since its already setup remotely
                     }
+                }
+
+                return true;
+            }
+        }
+
+        //doing this to support inherited classes
+        static EditType EditorType(Type type)
+        {
+            if (typeof(SlotInspector).IsAssignableFrom(type)) return EditType.slot;
+            else if (typeof(UserInspectorItem).IsAssignableFrom(type)) return EditType.user;
+            else if (typeof(BagEditor).IsAssignableFrom(type)) return EditType.bag;
+            else if (typeof(ListEditor).IsAssignableFrom(type)) return EditType.list;
+            return (EditType)(-1);
+        }
+        enum EditType
+        {
+            slot,
+            user,
+            bag,
+            list
+        }
+        static bool IsNullOrDisposed(RefID id, World world)
+        {
+            if (id == RefID.Null) return true;
+            var element = world.ReferenceController.GetObjectOrNull(id);
+            if (element == null || element.IsRemoved) return true;
+            return false;
+        }
+        static bool ShouldBuild(SyncField<RefID> field)
+        {
+            if (field.World.IsAuthority) return true; //not explicitly needed but this way we dont need to search thru the RemoteValues dict
+            if (RemoteValues.ContainsKey(field) && !IsNullOrDisposed(RemoteValues[field], field.World)) return false;
+            return true;
+        }
+        static MethodInfo ShouldBuildInfo = AccessTools.Method(typeof(MyInspectors), nameof(ShouldBuild));
+        static IEnumerable<CodeInstruction> Editor_OnChanges_Transpiler(IEnumerable<CodeInstruction> codes, FieldInfo targetField)
+        {
+            int hit = 0;
+            foreach (var code in codes)
+            {
+                if (hit <= 0 && (code.operand as MethodInfo)?.Name == "get_World")
+                {
+                    hit++;
+                    yield return new(OpCodes.Ldfld, targetField);
+                    yield return new(OpCodes.Call, ShouldBuildInfo);
+                }
+                else if (hit == 1)
+                {
+                    hit++; //skip an instruction in codes
+                }
+                else
+                {
+                    yield return code;
                 }
             }
         }
 
-        [HarmonyPatch(typeof(SlotInspector), nameof(SlotInspector.Setup))]
-        class SlotInspector_Patch
+        [HarmonyPatch(typeof(SlotInspector), "OnChanges")]
+        class SlotInspector_OnChanges_Patch
         {
-            static bool Prefix(SlotInspector __instance, Slot target, SyncRef<Slot> selectionReference, int depth, RelayRef<SyncRef<Slot>> ____selectionReference, Sync<int> ____depth, SyncRef<Slot> ____rootSlot)
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(SlotInspector), "_rootSlot"));
+            static void Postfix(SyncRef<TextExpandIndicator> ____expanderIndicator, SyncRef<Slot> ____rootSlot)
             {
-                if (__instance.World.IsAuthority) return true;
-                ____selectionReference.Target = selectionReference;
-                ____depth.Value = depth;
-                slot_target.SetValue(____rootSlot, target); //i think there is some proper way to set a local value but i forget it.
-
-                OnChanges.Invoke(__instance, null);
-                return false;
+                if (____expanderIndicator.World.IsAuthority) return;
+                TextExpandIndicator textexp = ____expanderIndicator.Target;
+                if (textexp.Empty.IsLinked) return;
+                textexp.CustomEmptyCheck.Target = null; //use default empty check
+                var logixSlot = textexp.Slot;
+                var stringNode = logixSlot.AttachComponent<ValueRegister<string>>();
+                var childCountNode = logixSlot.AttachComponent<ChildrenCount>();
+                var equalsNode = logixSlot.AttachComponent<Equals_Int>();
+                var conditionalNode = logixSlot.AttachComponent<Conditional_String>();
+                var referenceNode = logixSlot.AttachComponent<ReferenceNode<Slot>>();
+                var driverNode = logixSlot.AttachComponent<DriverNode<string>>();
+                stringNode.Value.Value = textexp.Empty.Value;
+                referenceNode.RefTarget.Target = ____rootSlot.Target;
+                childCountNode.Instance.Target = referenceNode;
+                equalsNode.A.Target = childCountNode;
+                conditionalNode.Condition.Target = equalsNode;
+                conditionalNode.OnTrue.Target = stringNode;
+                conditionalNode.OnFalse.Target = textexp.Closed;
+                driverNode.DriveTarget.Target = textexp.Empty;
+                driverNode.Source.Target = conditionalNode;
             }
         }
-
-        [HarmonyPatch(typeof(UserInspectorItem), nameof(UserInspectorItem.Setup))]
+        [HarmonyPatch(typeof(UserInspectorItem), "OnChanges")]
         class UserInspectorItem_Patch
         {
-            static bool Prefix(UserInspectorItem __instance, User user, SyncRef<User> ____user)
-            {
-                if (__instance.World.IsAuthority) return true;
-                user_target.SetValue(____user, user);
-                return false;
-            }
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(UserInspectorItem), "_user"));
         }
-        //these 2 could have some extra stuff done so they work after being loaded from a non local save. its not really worth it imo but something worth noting
-        //from looking into it some good options are FrooxEngine.MaterialRelay.MaterialRefs and comp slot bag 
-        [HarmonyPatch(typeof(BagEditor), nameof(BagEditor.Setup))]
+        //maybe what ui has been generated under an editor should be cashed
+        [HarmonyPatch(typeof(BagEditor), "OnChanges")]
         class BagEditor_Patch
         {
-            static bool Prefix(BagEditor __instance, ISyncBag target, Button button, SyncRef<ISyncBag> ____targetBag, SyncRef<Button> ____addNewButton)
-            {
-                if (__instance.World.IsAuthority) return true;
-                ____addNewButton.Target = button;
-                syncBag_target.SetValue(____targetBag, target);
-                button.Pressed.Target = BagEditorAddNewPressed.CreateDelegate(typeof(ButtonEventHandler), __instance) as ButtonEventHandler;
-                return false;
-            }
-        }
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(BagEditor), "_targetBag"));
 
-        [HarmonyPatch(typeof(ListEditor), nameof(ListEditor.Setup))]
+            [HarmonyPrefix]
+            [HarmonyPatch("Target_ElementAdded")]
+            static bool AddedPrefix(BagEditor __instance, SyncField<RefID> ____targetBag, IWorldElement element)
+            {
+                if (!ShouldBuild(____targetBag)) return false;
+                foreach (var child in __instance.Slot.Children)
+                {
+                    var comp = child.GetComponent<BagEditorItem>();
+                    if (comp != null)
+                    {
+                        if (comp.Item.Target == element)
+                        {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            }
+
+        }
+        [HarmonyPatch(typeof(ListEditor), "OnChanges")]
         class ListEditor_Patch
         {
-            static bool Prefix(ListEditor __instance, ISyncList target, Button button, SyncRef<ISyncList> ____targetList, SyncRef<Button> ____addNewButton)
+            static MethodInfo BuildListItem = AccessTools.Method(typeof(ListEditor), "BuildListItem");
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(ListEditor), "_targetList"));
+
+            [HarmonyPrefix]
+            [HarmonyPatch("Target_ElementsAdded")] //maybe a better strat here is to transpile Target_ElementsAdded to not create a slot then just prefix BuildListItem
+            static bool AddedPrefix(ListEditor __instance, SyncField<RefID> ____targetList, ISyncList list, int startIndex, int count)
             {
-                if (__instance.World.IsAuthority) return true;
-                ____addNewButton.Target = button;
-                synclist_target.SetValue(____targetList, target);
-                button.Pressed.Target = ListEditorAddNewPressed.CreateDelegate(typeof(ButtonEventHandler), __instance) as ButtonEventHandler;
+                if (!ShouldBuild(____targetList)) return false;
+                if (count == 1) //we can be more efficient and use more original code.
+                {
+                    var element = list.GetElement(startIndex);
+                    foreach (var child in __instance.Slot.Children)
+                    {
+                        var source = child[0].GetComponent<ReferenceProxySource>();
+                        if (source != null)
+                        {
+                            if (source.Reference.Target == element) return false;
+                        }
+                    }
+                    return true;
+                }
+                else
+                {
+                    HashSet<IWorldElement> built = new();
+                    foreach (var child in __instance.Slot.Children)
+                    {
+                        var source = child[0].GetComponent<ReferenceProxySource>();
+                        if (source != null)
+                        {
+                            built.Add(source.Reference.Target);
+                        }
+                    }
+
+                    __instance.World?.RunSynchronously(delegate
+                        {
+                            for (int i = startIndex; i < startIndex + count; i++)
+                            {
+                                var element = list.GetElement(i);
+                                if (built.Contains(element)) continue;
+                                Slot root = __instance.Slot.InsertSlot(i, "Element");
+                                BuildListItem.Invoke(__instance, new object[] { list, i, root });
+                            }
+                        });
+                }
+
                 return false;
             }
         }
