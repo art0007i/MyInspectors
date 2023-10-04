@@ -1,27 +1,28 @@
 using HarmonyLib;
-using NeosModLoader;
+using ResoniteModLoader;
 using System;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using FrooxEngine;
-using FrooxEngine.LogiX;
-using FrooxEngine.LogiX.Data;
-using FrooxEngine.LogiX.Operators;
-using FrooxEngine.LogiX.WorldModel;
-using BaseX;
+using Elements.Core;
 using System.Reflection.Emit;
 using FrooxEngine.UIX;
 using System.Diagnostics;
+using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes.FrooxEngine.Slots;
+using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes;
+using FrooxEngine.ProtoFlux;
+using FrooxEngine.ProtoFlux.Runtimes;
+using FrooxEngine.FrooxEngine.ProtoFlux.CoreNodes;
 
 namespace MyInspectors
 {
-    public class MyInspectors : NeosMod
+    public class MyInspectors : ResoniteMod
     {
         public override string Name => "MyInspectors";
-        public override string Author => "art0007i";
-        public override string Version => "1.3.0";
+        public override string Author => "art0007i"; // with massive help from https://github.com/EIA485
+        public override string Version => "2.0.0";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
         public override void OnEngineInit()
         {
@@ -270,21 +271,23 @@ namespace MyInspectors
                 if (textexp.Empty.IsLinked) return;
                 textexp.CustomEmptyCheck.Target = null; //use default empty check
                 var logixSlot = textexp.Slot;
-                var stringNode = logixSlot.AttachComponent<ValueRegister<string>>();
+                var stringNodeEmpty = logixSlot.AttachComponent<ValueObjectInput<string>>();
+                var stringNodeClosed = logixSlot.AttachComponent<ObjectValueSource<string>>();
                 var childCountNode = logixSlot.AttachComponent<ChildrenCount>();
-                var equalsNode = logixSlot.AttachComponent<Equals_Int>();
-                var conditionalNode = logixSlot.AttachComponent<Conditional_String>();
-                var referenceNode = logixSlot.AttachComponent<ReferenceNode<Slot>>();
-                var driverNode = logixSlot.AttachComponent<DriverNode<string>>();
-                stringNode.Value.Value = textexp.Empty.Value;
-                referenceNode.RefTarget.Target = ____rootSlot.Target;
-                childCountNode.Instance.Target = referenceNode;
+                var equalsNode = logixSlot.AttachComponent<ValueEquals<int>>();
+                var conditionalNode = logixSlot.AttachComponent<ObjectConditional<string>>();
+                var slotRef = logixSlot.AttachComponent<ElementSource<Slot>>();
+                var driverNode = logixSlot.AttachComponent<ObjectFieldDrive<string>>();
+                stringNodeEmpty.Value.Value = textexp.Empty;
+                stringNodeClosed.TrySetRootSource(textexp.Closed);
+                slotRef.TrySetRootSource(____rootSlot.Target);
+                childCountNode.Instance.Target = slotRef;
                 equalsNode.A.Target = childCountNode;
                 conditionalNode.Condition.Target = equalsNode;
-                conditionalNode.OnTrue.Target = stringNode;
-                conditionalNode.OnFalse.Target = textexp.Closed;
-                driverNode.DriveTarget.Target = textexp.Empty;
-                driverNode.Source.Target = conditionalNode;
+                conditionalNode.OnTrue.Target = stringNodeEmpty;
+                conditionalNode.OnFalse.Target = stringNodeClosed;
+                driverNode.TrySetRootTarget(textexp.Empty);
+                driverNode.Value.Target = conditionalNode;
             }
         }
         [HarmonyPatch(typeof(UserInspectorItem), "OnChanges")]
