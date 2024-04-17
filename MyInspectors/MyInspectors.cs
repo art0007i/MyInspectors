@@ -22,7 +22,7 @@ namespace MyInspectors
     {
         public override string Name => "MyInspectors";
         public override string Author => "art0007i"; // with massive help from https://github.com/EIA485
-        public override string Version => "2.0.0";
+        public override string Version => "2.0.1";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
         public override void OnEngineInit()
         {
@@ -45,7 +45,7 @@ namespace MyInspectors
                     // onchanges triggers 1 update later, when we need 0 updates so it doesn't sync
                     i.RunInUpdates(0, () =>
                     {
-                        Traverse.Create(__instance).Method("OnChanges").GetValue();
+                        Traverse.Create(i).Method("OnChanges").GetValue();
                     });
                 }
             }
@@ -267,8 +267,9 @@ namespace MyInspectors
             static void Postfix(SyncRef<TextExpandIndicator> ____expanderIndicator, SyncRef<Slot> ____rootSlot)
             {
                 if (____expanderIndicator.World.IsAuthority) return;
+
                 TextExpandIndicator textexp = ____expanderIndicator.Target;
-                if (textexp.Empty.IsLinked) return;
+                if (textexp == null || textexp.Empty.IsLinked) return;
                 textexp.CustomEmptyCheck.Target = null; //use default empty check
                 var logixSlot = textexp.Slot;
                 var stringNodeEmpty = logixSlot.AttachComponent<ValueObjectInput<string>>();
@@ -332,44 +333,8 @@ namespace MyInspectors
             static bool AddedPrefix(ListEditor __instance, SyncField<RefID> ____targetList, ISyncList list, int startIndex, int count)
             {
                 if (!ShouldBuild(____targetList)) return false;
-                if (count == 1) //we can be more efficient and use more original code.
-                {
-                    var element = list.GetElement(startIndex);
-                    foreach (var child in __instance.Slot.Children)
-                    {
-                        var source = child[0].GetComponent<ReferenceProxySource>();
-                        if (source != null)
-                        {
-                            if (source.Reference.Target == element) return false;
-                        }
-                    }
-                    return true;
-                }
-                else
-                {
-                    HashSet<IWorldElement> built = new();
-                    foreach (var child in __instance.Slot.Children)
-                    {
-                        var source = child[0].GetComponent<ReferenceProxySource>();
-                        if (source != null)
-                        {
-                            built.Add(source.Reference.Target);
-                        }
-                    }
-
-                    __instance.World?.RunSynchronously(delegate
-                        {
-                            for (int i = startIndex; i < startIndex + count; i++)
-                            {
-                                var element = list.GetElement(i);
-                                if (built.Contains(element)) continue;
-                                Slot root = __instance.Slot.InsertSlot(i, "Element");
-                                BuildListItem.Invoke(__instance, new object[] { list, i, root });
-                            }
-                        });
-                }
-
-                return false;
+                
+                return true;
             }
         }
     }
