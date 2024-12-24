@@ -22,12 +22,38 @@ namespace MyInspectors
     {
         public override string Name => "MyInspectors";
         public override string Author => "art0007i"; // with massive help from https://github.com/EIA485
-        public override string Version => "2.0.1";
+        public override string Version => "2.0.2";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
+
+        [AutoRegisterConfigKey]
+        public static ModConfigurationKey<bool> KEY_ENABLE = new("enable", "Untick to disable the mod.", ()=>true);
+
         public override void OnEngineInit()
         {
             Harmony harmony = new Harmony("me.art0007i.MyInspectors");
-            harmony.PatchAll();
+
+            var config = GetConfiguration();
+            if(config.GetValue(KEY_ENABLE))
+            {
+                Debug("Applying Patches");
+                harmony.PatchAll();
+            }
+            config.OnThisConfigurationChanged += (e) =>
+            {
+                if (e.Key == KEY_ENABLE)
+                {
+                    if(e.Config.GetValue(KEY_ENABLE))
+                    {
+                        Debug("Applying Patches");
+                        harmony.PatchAll();
+                    }
+                    else
+                    {
+                        Debug("Removing Patches");
+                        harmony.UnpatchAll(harmony.Id);
+                    }
+                }
+            };
         }
         static FieldInfo _targetContainer = AccessTools.Field(typeof(WorkerInspector), "_targetContainer");
         static FieldInfo _value = AccessTools.Field(typeof(SyncField<RefID>), "_value");
