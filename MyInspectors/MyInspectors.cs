@@ -3,7 +3,6 @@ using ResoniteModLoader;
 using System;
 using System.Linq;
 using System.Reflection;
-using System.Threading.Tasks;
 using System.Collections.Generic;
 using FrooxEngine;
 using Elements.Core;
@@ -12,8 +11,6 @@ using FrooxEngine.UIX;
 using System.Diagnostics;
 using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes.FrooxEngine.Slots;
 using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes;
-using FrooxEngine.ProtoFlux;
-using FrooxEngine.ProtoFlux.Runtimes;
 using FrooxEngine.FrooxEngine.ProtoFlux.CoreNodes;
 
 namespace MyInspectors
@@ -21,8 +18,8 @@ namespace MyInspectors
     public class MyInspectors : ResoniteMod
     {
         public override string Name => "MyInspectors";
-        public override string Author => "art0007i"; // with massive help from https://github.com/EIA485
-        public override string Version => "2.0.2";
+        public override string Author => "art0007i"; // with massive help from https://github.com/EIA485 // Panda was here
+        public override string Version => "2.0.3";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
 
         [AutoRegisterConfigKey]
@@ -72,6 +69,29 @@ namespace MyInspectors
                     i.RunInUpdates(0, () =>
                     {
                         Traverse.Create(i).Method("OnChanges").GetValue();
+                    });
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(SceneInspector), "OnAttach")]
+        class InjectDynvarSpaceForUser
+        {
+            [HarmonyPostfix]
+            public static void Postfix(SceneInspector __instance)
+            {
+                Slot slot = __instance.Slot;
+                __instance.ReferenceID.ExtractIDs(out var position, out var user);
+		        User userByAllocationID = __instance.World.GetUserByAllocationID(user);
+
+                if (userByAllocationID != null && userByAllocationID == __instance.LocalUser) {
+                    DynamicVariableSpace space = slot.AttachComponent<DynamicVariableSpace>();
+                    space.RunInUpdates(3, () => {
+                        space.SpaceName.Value = "MyInspector";
+                        space.OnlyDirectBinding.Value = true;
+                        DynamicReferenceVariable<User> userVariable = slot.AttachComponent<DynamicReferenceVariable<User>>();
+                        userVariable.VariableName.Value = "MyInspector/User";
+                        userVariable.Reference.Value = __instance.LocalUser.ReferenceID;
                     });
                 }
             }
