@@ -47,7 +47,7 @@ namespace MyInspectors
                     else
                     {
                         Debug("Removing Patches");
-                        harmony.UnpatchSelf();
+                        harmony.UnpatchAll("me.art0007i.MyInspectors");
                     }
                 }
             };

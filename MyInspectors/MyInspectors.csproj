@@ -22,7 +22,7 @@
 
   <ItemGroup>
     <Reference Include="HarmonyLib">
-      <HintPath>$(GamePath)BepInEx/core/0Harmony.dll</HintPath>
+      <HintPath>$(GamePath)rml_libs/0Harmony.dll</HintPath>
     </Reference>
     <Reference Include="Elements.Core">
       <HintPath>$(GamePath)Elements.Core.dll</HintPath>
