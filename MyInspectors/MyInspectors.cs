@@ -18,7 +18,7 @@ namespace MyInspectors
     public class MyInspectors : ResoniteMod
     {
         public override string Name => "MyInspectors";
-        public override string Author => "art0007i"; // with massive help from https://github.com/EIA485
+        public override string Author => "art0007i";
         public override string Version => "2.0.4";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
 
