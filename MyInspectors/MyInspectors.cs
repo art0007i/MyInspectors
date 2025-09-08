@@ -19,21 +19,36 @@ namespace MyInspectors
     {
         public override string Name => "MyInspectors";
         public override string Author => "art0007i"; // with massive help from https://github.com/EIA485
-        public override string Version => "2.0.4";
+        public override string Version => "2.0.4-verbose";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
 
         [AutoRegisterConfigKey]
         public static ModConfigurationKey<bool> KEY_ENABLE = new("enable", "Untick to disable the mod.", () => true);
+        static ModConfiguration config;
 
+        [HarmonyPatch(typeof(TextExpandIndicator), "OnInit")]
+        public class ObviousSlotInspectorPatch
+        {
+            public static void Postfix(TextExpandIndicator __instance)
+            {
+                if(!config.GetValue(KEY_ENABLE)) return;
+
+                var addon = "," + __instance.LocalUser.AllocationID;
+                __instance.Closed.Value += addon;
+                __instance.Opened.Value += addon;
+                __instance.Empty.Value += addon;
+            }
+        }
         public override void OnEngineInit()
         {
             Harmony harmony = new Harmony("me.art0007i.MyInspectors");
 
-            var config = GetConfiguration();
+            config = GetConfiguration();
             if (config.GetValue(KEY_ENABLE))
             {
-                Debug("Applying Patches");
+                Msg("Applying Patches");
                 harmony.PatchAll();
+                Msg("Patched methods:\n" + string.Join('\n', harmony.GetPatchedMethods().Select(x=>x.FullDescription())));
             }
 
             config.OnThisConfigurationChanged += e =>
@@ -42,12 +57,15 @@ namespace MyInspectors
                 {
                     if (e.Config.GetValue(KEY_ENABLE))
                     {
-                        Debug("Applying Patches");
+                        Msg("Applying Patches");
                         harmony.PatchAll();
+                        Msg("Patched methods:\n" + string.Join('\n', harmony.GetPatchedMethods()));
                     }
                     else
                     {
-                        Debug("Removing Patches");
+                        Msg("Removing Patches");
+                        Msg("Patched methods:\n" + string.Join('\n', harmony.GetPatchedMethods()));
+
                         harmony.UnpatchAll("me.art0007i.MyInspectors");
                     }
                 }
@@ -197,11 +215,15 @@ namespace MyInspectors
 
                 // maybe i should be using the IsChangedLocally function somehow to determine if its a local change or not but this is just what came first to mind and works for now.
                 // index 2 because the first one is our patch
-                MethodBase caller = new StackTrace().GetFrame(3)?.GetMethod();
+                var stack = new StackTrace();
+                MethodBase caller = stack.GetFrame(3)?.GetMethod();
                 string callerName = caller?.Name;
+                bool changedRemotely = !string.IsNullOrEmpty(callerName) && (callerName.Contains("InternalDecodeDelta") || callerName.Contains("InternalDecodeFull"));
+
+                Msg($"Patching Editor Type: {editType}, LocalChanged1: {!changedRemotely}, LocalChanged2: {SceneInspector_Patch.IsChangedLocally(__instance)}\nObjectTrace:\n{__instance.ParentHierarchyToString()}\nStackTrace:\n{stack}");
                 
                 // comparing by name instead of ref since im not sure how this will work with a non generic method in a generic class. may be worth testing later.
-                if (!string.IsNullOrEmpty(callerName) && (callerName.Contains("InternalDecodeDelta") || callerName.Contains("InternalDecodeFull")))
+                if (changedRemotely)
                 {
                     if (!RemoteValues.ContainsKey(__instance))
                     {
