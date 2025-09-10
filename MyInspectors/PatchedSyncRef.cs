@@ -37,7 +37,6 @@ class PatchedSyncRef<T> : SyncRef<T>, EditorTargetField where T : class, IWorldE
                 value = RefID.Null;
                 remoteValue = value;
                 change = false;
-                var instance = this;
                 World.RunInUpdates(1, () =>
                 {
                     _value = current;
