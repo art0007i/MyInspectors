@@ -1,15 +1,16 @@
+using Elements.Core;
+using FrooxEngine;
+using FrooxEngine.FrooxEngine.ProtoFlux.CoreNodes;
+using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes;
+using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes.FrooxEngine.Slots;
+using FrooxEngine.UIX;
 using HarmonyLib;
 using ResoniteModLoader;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using System.Collections.Generic;
-using FrooxEngine;
-using Elements.Core;
 using System.Reflection.Emit;
-using FrooxEngine.UIX;
-using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes.FrooxEngine.Slots;
-using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes;
-using FrooxEngine.FrooxEngine.ProtoFlux.CoreNodes;
+using static FrooxEngine.UserInspector;
 
 namespace MyInspectors
 {
@@ -49,7 +50,7 @@ namespace MyInspectors
                     else
                     {
                         Debug("Removing Patches");
-                        harmony.UnpatchAll("me.art0007i.MyInspectors");
+                        harmony.UnpatchSelf();
                     }
                 }
             };
@@ -108,7 +109,7 @@ namespace MyInspectors
                 }
             }
 
-            public static bool IsHost(SceneInspector i) => i.World.IsAuthority;
+            public static bool IsHost(Component i) => i.World.IsAuthority;
 
             public static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
             {
@@ -160,10 +161,11 @@ namespace MyInspectors
                 }
             }
         }
-        static void createPatchedSyncref<T>(ref SyncRef<T> old, IWorldElement existingObj) where T : class, IWorldElement
+        static void createPatchedSyncref<T>(ref SyncRef<T> old, IWorldElement existingObj = null) where T : class, IWorldElement
         {//old.World.IsAuthority does not exist yet
-            if (!existingObj.World.IsAuthority) old = new PatchedSyncRef<T>();
+            if (existingObj?.World.IsAuthority != true) old = new PatchedSyncRef<T>();
         }
+        static void createPatchedSync<T>(ref Sync<T> old) => old = new PatchedSync<T>();
         [HarmonyPatch]
         private class InitializeSyncMemberPatch
         {
@@ -174,6 +176,19 @@ namespace MyInspectors
             [HarmonyPostfix]
             [HarmonyPatch(typeof(UserInspectorItem), "InitializeSyncMembers")]
             static void UserInspectorItemPostfix(UserInspectorItem __instance, ref SyncRef<User> ____user) => createPatchedSyncref(ref ____user, __instance);
+
+            [HarmonyPostfix]
+            [HarmonyPatch(typeof(UserInspector), "InitializeSyncMembers")]
+            static void UserInspectorPostfix(UserInspector __instance, ref SyncRef<User> ___ViewUser, ref SyncRef<User> ____currentUser, ref Sync<View> ____currentViewGroup, ref Sync<View> ___ViewGroup, ref Sync<ushort> ____currentStreamGroup, ref Sync<ushort> ___ViewStreamGroup)
+            {
+                if (__instance.World.IsAuthority) return;
+                createPatchedSyncref(ref ___ViewUser);
+                createPatchedSyncref(ref ____currentUser);
+                createPatchedSync(ref ____currentStreamGroup);
+                createPatchedSync(ref ___ViewStreamGroup);
+                createPatchedSync(ref ____currentViewGroup);
+                createPatchedSync(ref ___ViewGroup);
+            }
 
             [HarmonyPostfix]
             [HarmonyPatch(typeof(BagEditor), "InitializeSyncMembers")]
@@ -251,6 +266,11 @@ namespace MyInspectors
         {
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(UserInspectorItem), "_user"));
         }
+        [HarmonyPatch(typeof(UserInspector), "OnChanges")]
+        class UserInspector_Patch
+        { //maybe improve this to not build if any of the patched sync members have a differing remote value
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(UserInspector), "ViewUser"));
+        }
 
         // maybe what ui has been generated under an editor should be cashed
         [HarmonyPatch(typeof(BagEditor), "OnChanges")]
@@ -287,6 +307,14 @@ namespace MyInspectors
             {
                 return ShouldBuild(____targetList);
             }
+        }
+
+        internal static bool IsNullOrDisposed(RefID id, World world)
+        {
+            if (id == RefID.Null) return true;
+            var element = world.ReferenceController.GetObjectOrNull(id);
+
+            return element == null || element.IsRemoved;
         }
     }
 }
