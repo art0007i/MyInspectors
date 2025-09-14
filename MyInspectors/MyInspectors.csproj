@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <ProjectGuid>{FFA93FA9-4040-46FF-8A1C-2A190C0CC235}</ProjectGuid>
     <OutputType>Library</OutputType>
@@ -6,7 +6,7 @@
     <RootNamespace>MyInspectors</RootNamespace>
     <AssemblyTitle>MyInspectors</AssemblyTitle>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-    <LangVersion>10</LangVersion>
+    <LangVersion>preview</LangVersion>
     <TargetFramework>net9.0</TargetFramework>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>

@@ -66,3 +66,12 @@ interface EditorTargetField
 {
     bool ShouldBuild { get; }
 }
+
+
+class UserInspectorState
+{
+    public UserInspectorState(UserInspector.View view, User target, ushort streamGroup = 0) => (View, Target, StreamGroup) = (view, target, streamGroup);
+    internal UserInspector.View View;
+    internal User Target;
+    internal ushort StreamGroup;
+}

@@ -1,15 +1,17 @@
+using Elements.Core;
+using FrooxEngine;
+using FrooxEngine.FrooxEngine.ProtoFlux.CoreNodes;
+using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes;
+using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes.FrooxEngine.Slots;
+using FrooxEngine.UIX;
 using HarmonyLib;
 using ResoniteModLoader;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using System.Collections.Generic;
-using FrooxEngine;
-using Elements.Core;
 using System.Reflection.Emit;
-using FrooxEngine.UIX;
-using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes.FrooxEngine.Slots;
-using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes;
-using FrooxEngine.FrooxEngine.ProtoFlux.CoreNodes;
+using System.Runtime.CompilerServices;
+using static FrooxEngine.UserInspector;
 
 namespace MyInspectors
 {
@@ -55,7 +57,7 @@ namespace MyInspectors
             };
         }
         static FieldInfo _targetContainer = AccessTools.Field(typeof(WorkerInspector), "_targetContainer");
-
+        static ConditionalWeakTable<UserInspector, UserInspectorState> userInspectorStates = new();
         // patching 'hot' code. but like idk how else to do it
         [HarmonyPatch(typeof(SceneInspector), "OnAwake")]
         class StupidInspectorFixupPatch
@@ -246,12 +248,6 @@ namespace MyInspectors
             }
         }
 
-        [HarmonyPatch(typeof(UserInspectorItem), "OnChanges")]
-        class UserInspectorItem_Patch
-        {
-            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(UserInspectorItem), "_user"));
-        }
-
         // maybe what ui has been generated under an editor should be cashed
         [HarmonyPatch(typeof(BagEditor), "OnChanges")]
         class BagEditor_Patch
@@ -286,6 +282,83 @@ namespace MyInspectors
             private static bool AddedPrefix(ListEditor __instance, SyncField<RefID> ____targetList, ISyncList list, int startIndex, int count)
             {
                 return ShouldBuild(____targetList);
+            }
+        }
+
+        [HarmonyPatch(typeof(UserInspectorItem))]
+        class UserInspectorItem_Patch
+        {
+            [HarmonyTranspiler]
+            [HarmonyPatch("OnChanges")]
+            static IEnumerable<CodeInstruction> OnChangesTranspiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(UserInspectorItem), "_user"));
+
+            //the cleaner solution is creating a PatchedSync<T> but Sync<T> is sealed and net 9 enforces that at runtime
+            [HarmonyPrefix]
+            [HarmonyPatch("OpenComponents")]
+            static bool OpenComponentsPrefix(UserInspectorItem __instance, SyncRef<User> ____user)
+            {
+                if (____user.Target == null || __instance.World.IsAuthority ||
+                    __instance.Slot.GetComponentInParents<UserInspector>() is not UserInspector inspector) return true;
+                OpenUserInspector(inspector, new(View.Components, ____user.Target));
+                return false;
+            }
+
+            [HarmonyPrefix]
+            [HarmonyPatch("OpenStream")]
+            static bool OpenStreamPrefix(UserInspectorItem __instance, SyncRef<User> ____user, ushort streamIndex)
+            {
+                if (____user.Target == null || __instance.World.IsAuthority ||
+                    __instance.Slot.GetComponentInParents<UserInspector>() is not UserInspector inspector) return true;
+                OpenUserInspector(inspector, new(View.Streams, ____user.Target, streamIndex));
+                return false;
+            }
+
+            [HarmonyPrefix]
+            [HarmonyPatch("OpenUser")]
+            static bool OpenUserPrefix(UserInspectorItem __instance, SyncRef<User> ____user)
+            {
+                if (____user.Target == null || __instance.World.IsAuthority ||
+                    __instance.Slot.GetComponentInParents<UserInspector>() is not UserInspector inspector) return true;
+                OpenUserInspector(inspector, new(View.User, ____user.Target));
+                return false;
+            }
+        }
+        static MethodInfo _FilterWorker = AccessTools.Method(typeof(UserInspector), "FilterWorker");
+        static void OpenUserInspector(UserInspector Inspector, UserInspectorState state)
+        {
+            userInspectorStates.AddOrUpdate(Inspector, state);
+            ((SyncRef<Sync<string>>)Inspector.GetSyncMember("_userText")).Target?.Value = $"User: {state.Target?.UserName} ({state.Target?.ReferenceID})";
+            var uislot = ((SyncRef<Slot>)Inspector.GetSyncMember("_workersContentRoot")).Target;
+            if (uislot == null) return;
+            uislot.DestroyChildren();
+            uislot.AddSlot("WorkersRoot").AttachComponent<WorkerInspector>().SetupContainer(state.Target, null, _FilterWorker.CreateDelegate<System.Predicate<Worker>>(Inspector), state.View == View.User);
+        }
+
+        [HarmonyPatch(typeof(UserInspector), "FilterWorker")]
+        class UserInspector_Patch
+        {
+            static bool Prefix(UserInspector __instance, ref bool __result, Worker worker)
+            {
+                UserInspectorState state;
+                if (!userInspectorStates.TryGetValue(__instance, out state)) return true;
+
+                switch (state.View)
+                {
+                    case View.Components:
+                        __result = worker is UserComponent;
+                        break;
+                    case View.Streams:
+                        if (worker is Stream stream) __result = stream.GroupIndex == state.StreamGroup;
+                        else __result = false;
+                        break;
+                    case View.User:
+                        __result = worker is User;
+                        break;
+                    default:
+                        __result = true;
+                        break;
+                }
+                return false;
             }
         }
     }
