@@ -1,7 +1,7 @@
 ﻿using Elements.Core;
 using FrooxEngine;
-using System.IO;
-using static MyInspectors.MyInspectors;
+
+using static MyInspectors.Plugin;
 
 namespace MyInspectors;
 
@@ -18,7 +18,7 @@ class PatchedSyncRef<T> : SyncRef<T>, EditorTargetField where T : class, IWorldE
     }
     protected override bool InternalSetRefID(in RefID id, T prevTarget)
     {
-        if (!config.GetValue(KEY_ENABLE)) return base.InternalSetRefID(id, prevTarget);
+        if (!Enable.Value) return base.InternalSetRefID(id, prevTarget);
 
         RefID value = id;
         bool sync = false;
@@ -27,10 +27,10 @@ class PatchedSyncRef<T> : SyncRef<T>, EditorTargetField where T : class, IWorldE
         if (remoteValue.HasValue)
         {
             var editType = Parent.GetType();
-            if (typeof(SlotInspector).IsAssignableFrom(editType) || typeof(UserInspectorItem).IsAssignableFrom(editType))
+            if (typeof(SlotInspector).IsAssignableFrom(editType) || typeof(UserInspectorItem).IsAssignableFrom(editType) || typeof(UserInspector).IsAssignableFrom(editType))
             {
                 if (remoteValue == RefID.Null) return base.InternalSetValue(in value, sync, change);
-                
+
                 // sync null
                 sync = true;
                 var current = value;
@@ -53,25 +53,30 @@ class PatchedSyncRef<T> : SyncRef<T>, EditorTargetField where T : class, IWorldE
 
     bool EditorTargetField.ShouldBuild => !remoteValue.HasValue || (remoteValue.HasValue && IsNullOrDisposed(remoteValue.Value, World));
 
-    static bool IsNullOrDisposed(RefID id, World world)
+}
+class PatchedSync<T> : Sync<T>, EditorTargetField //to build you must run Resonite once with the patcher and assembly dumping enabled. you may need to restart your ide
+{
+    T remoteValue = default;
+    protected override void InternalDecodeDelta(BinaryReader reader, BinaryMessageBatch inboundMessage) => InternalDecodeFull(reader, inboundMessage);
+    protected override void InternalDecodeFull(BinaryReader reader, BinaryMessageBatch inboundMessage)
     {
-        if (id == RefID.Null) return true;
-        var element = world.ReferenceController.GetObjectOrNull(id);
-
-        return element == null || element.IsRemoved;
+        T value = Coder<T>.Decode(reader);
+        remoteValue = value;
+        InternalSetValue(in value, sync: false);
     }
+    protected override bool InternalSetValue(in T value, bool sync = true, bool change = true)
+    {
+        if (Enable.Value && !Coder<T>.Equals(remoteValue, value))
+        {
+            sync = false;
+            change = true;
+        }
+        return base.InternalSetValue(in value, sync, change);
+    }
+    bool EditorTargetField.ShouldBuild => !Coder<T>.Equals(remoteValue, _value);
 }
 
 interface EditorTargetField
 {
     bool ShouldBuild { get; }
-}
-
-
-class UserInspectorState
-{
-    public UserInspectorState(UserInspector.View view, User target, ushort streamGroup = 0) => (View, Target, StreamGroup) = (view, target, streamGroup);
-    internal UserInspector.View View;
-    internal User Target;
-    internal ushort StreamGroup;
 }
