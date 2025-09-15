@@ -396,5 +396,16 @@ namespace MyInspectors
             [HarmonyPatch(typeof(SyncField<Type>), "set_Value")]
             public static void SetBase(object instance, Type value) { }
         }
+
+        [HarmonyPatch(typeof(Coder), "IsEnginePrimitive")]
+        class Coder_Patch
+        {
+            static bool Prefix(ref bool __result, Type type)
+            {
+                if(type?.Name?.Contains("MyInspectors") == true) { __result = true; return false; }
+                return true;
+            }
+        }
+        
     }
 }
