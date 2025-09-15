@@ -1,35 +1,38 @@
+using Elements.Core;
+using FrooxEngine;
+using FrooxEngine.FrooxEngine.ProtoFlux.CoreNodes;
+using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes;
+using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes.FrooxEngine.Slots;
+using FrooxEngine.UIX;
 using HarmonyLib;
 using ResoniteModLoader;
-using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using System.Collections.Generic;
-using FrooxEngine;
-using Elements.Core;
 using System.Reflection.Emit;
-using FrooxEngine.UIX;
-using System.Diagnostics;
-using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes.FrooxEngine.Slots;
-using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes;
-using FrooxEngine.FrooxEngine.ProtoFlux.CoreNodes;
+using System.Runtime.CompilerServices;
+using static FrooxEngine.UserInspector;
 
 namespace MyInspectors
 {
     public class MyInspectors : ResoniteMod
     {
         public override string Name => "MyInspectors";
-        public override string Author => "art0007i"; // with massive help from https://github.com/EIA485
-        public override string Version => "2.0.4";
+        public override string Author => "art0007i";
+        public override string Version => "2.1.0";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
+
+        public static ModConfiguration config { get; private set; }
 
         [AutoRegisterConfigKey]
         public static ModConfigurationKey<bool> KEY_ENABLE = new("enable", "Untick to disable the mod.", () => true);
+
 
         public override void OnEngineInit()
         {
             Harmony harmony = new Harmony("me.art0007i.MyInspectors");
 
-            var config = GetConfiguration();
+            config = GetConfiguration();
             if (config.GetValue(KEY_ENABLE))
             {
                 Debug("Applying Patches");
@@ -54,10 +57,7 @@ namespace MyInspectors
             };
         }
         static FieldInfo _targetContainer = AccessTools.Field(typeof(WorkerInspector), "_targetContainer");
-        static FieldInfo _value = AccessTools.Field(typeof(SyncField<RefID>), "_value");
-        static MethodInfo ValueChanged = AccessTools.Method(typeof(SyncField<RefID>), "ValueChanged");
-        static Dictionary<SyncField<RefID>, RefID> RemoteValues = new();
-
+        static ConditionalWeakTable<UserInspector, UserInspectorState> userInspectorStates = new();
         // patching 'hot' code. but like idk how else to do it
         [HarmonyPatch(typeof(SceneInspector), "OnAwake")]
         class StupidInspectorFixupPatch
@@ -162,115 +162,34 @@ namespace MyInspectors
                 }
             }
         }
-
-        [HarmonyPatch(typeof(SyncField<RefID>), "InternalSetValue")]
-        private class SyncField_Patch
-        {
-            internal static bool Prefix(SyncField<RefID> __instance, ref RefID value, ref bool sync, ref bool change)
-            {
-                if (__instance == null || __instance.World.IsAuthority) return true;
-
-                var parent = __instance.Parent;
-                var editType = EditorType(parent.GetType());
-                switch (editType)
-                {
-                    case EditType.slot:
-                        if (__instance is not SyncRef<Slot> || ((SlotInspector)parent).GetSyncMember("_rootSlot") != __instance)
-                            return true;
-                        break;
-                    case EditType.user:
-                        if (__instance is not SyncRef<User> || ((UserInspectorItem)parent).GetSyncMember("_user") != __instance)
-                            return true;
-                        break;
-                    case EditType.bag:
-                        if (__instance is not SyncRef<ISyncBag> || ((BagEditor)parent).GetSyncMember("_targetBag") != __instance)
-                            return true;
-                        break;
-                    case EditType.list:
-                        if (__instance is not SyncRef<ISyncList> || ((ListEditor)parent).GetSyncMember("_targetList") != __instance)
-                            return true;
-                        break;
-                    default:
-                        return true;
-                }
-                sync = false;
-
-                // maybe i should be using the IsChangedLocally function somehow to determine if its a local change or not but this is just what came first to mind and works for now.
-                // index 2 because the first one is our patch
-                MethodBase caller = new StackTrace().GetFrame(3)?.GetMethod();
-                string callerName = caller?.Name;
-                
-                // comparing by name instead of ref since im not sure how this will work with a non generic method in a generic class. may be worth testing later.
-                if (!string.IsNullOrEmpty(callerName) && (callerName.Contains("InternalDecodeDelta") || callerName.Contains("InternalDecodeFull")))
-                {
-                    if (!RemoteValues.ContainsKey(__instance))
-                    {
-                        Worker parentv = (Worker)__instance.Parent;
-                        parentv.Disposing += _ => RemoteValues.Remove(__instance); // guess i could restructure this to not create runtime delegates. in theory it would use less memory but would probably also be very slightly slower
-                    }
-
-                    RemoteValues[__instance] = value;
-                }
-                else if (RemoteValues.ContainsKey(__instance))
-                {
-                    if (editType == EditType.slot || editType == EditType.user)
-                    {
-                        if (RemoteValues[__instance] == RefID.Null) return true;
-
-                        sync = true;
-                        var current = value;
-
-                        value = RefID.Null;
-                        RemoteValues[__instance] = value;
-                        change = false;
-
-                        __instance.World.RunInUpdates(1, () =>
-                        {
-                            _value.SetValue(__instance, current);
-                            ValueChanged.Invoke(__instance, null);
-                        });
-                    }
-                    else
-                    {
-                        sync = true; // changing it wont matter since its already setup remotely
-                    }
-                }
-
-                return true;
-            }
+        static void createPatchedSyncref<T>(ref SyncRef<T> old, IWorldElement existingObj) where T : class, IWorldElement
+        {//old.World.IsAuthority does not exist yet
+            if (!existingObj.World.IsAuthority) old = new PatchedSyncRef<T>();
         }
-
-        // doing this to support inherited classes
-        static EditType EditorType(Type type)
+        [HarmonyPatch]
+        private class InitializeSyncMemberPatch
         {
-            if (typeof(SlotInspector).IsAssignableFrom(type)) return EditType.slot;
-            if (typeof(UserInspectorItem).IsAssignableFrom(type)) return EditType.user;
-            if (typeof(BagEditor).IsAssignableFrom(type)) return EditType.bag;
-            if (typeof(ListEditor).IsAssignableFrom(type)) return EditType.list;
-            return (EditType)(-1);
-        }
+            [HarmonyPostfix]
+            [HarmonyPatch(typeof(SlotInspector), "InitializeSyncMembers")]
+            static void SlotInspectorPostfix(SlotInspector __instance, ref SyncRef<Slot> ____rootSlot) => createPatchedSyncref(ref ____rootSlot, __instance);
 
-        enum EditType
-        {
-            slot,
-            user,
-            bag,
-            list
-        }
+            [HarmonyPostfix]
+            [HarmonyPatch(typeof(UserInspectorItem), "InitializeSyncMembers")]
+            static void UserInspectorItemPostfix(UserInspectorItem __instance, ref SyncRef<User> ____user) => createPatchedSyncref(ref ____user, __instance);
 
-        static bool IsNullOrDisposed(RefID id, World world)
-        {
-            if (id == RefID.Null) return true;
-            var element = world.ReferenceController.GetObjectOrNull(id);
+            [HarmonyPostfix]
+            [HarmonyPatch(typeof(BagEditor), "InitializeSyncMembers")]
+            static void BagEditorPostfix(BagEditor __instance, ref SyncRef<ISyncBag> ____targetBag) => createPatchedSyncref(ref ____targetBag, __instance);
 
-            return element == null || element.IsRemoved;
+            [HarmonyPostfix]
+            [HarmonyPatch(typeof(ListEditor), "InitializeSyncMembers")]
+            static void ListEditorPostfix(ListEditor __instance, ref SyncRef<ISyncList> ____targetList) => createPatchedSyncref(ref ____targetList, __instance);
         }
 
         static bool ShouldBuild(SyncField<RefID> field)
         {
-            if (field.World.IsAuthority) return true; // not explicitly needed but this way we dont need to search thru the RemoteValues dict
-
-            return !RemoteValues.ContainsKey(field) || IsNullOrDisposed(RemoteValues[field], field.World);
+            if (field.World.IsAuthority) return true;
+            return field is EditorTargetField patched && patched.ShouldBuild;
         }
 
         static MethodInfo ShouldBuildInfo = AccessTools.Method(typeof(MyInspectors), nameof(ShouldBuild));
@@ -329,12 +248,6 @@ namespace MyInspectors
             }
         }
 
-        [HarmonyPatch(typeof(UserInspectorItem), "OnChanges")]
-        class UserInspectorItem_Patch
-        {
-            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(UserInspectorItem), "_user"));
-        }
-
         // maybe what ui has been generated under an editor should be cashed
         [HarmonyPatch(typeof(BagEditor), "OnChanges")]
         class BagEditor_Patch
@@ -359,7 +272,7 @@ namespace MyInspectors
         }
 
         [HarmonyPatch(typeof(ListEditor), "OnChanges")]
-         class ListEditor_Patch
+        class ListEditor_Patch
         {
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(ListEditor), "_targetList"));
 
@@ -369,6 +282,83 @@ namespace MyInspectors
             private static bool AddedPrefix(ListEditor __instance, SyncField<RefID> ____targetList, ISyncList list, int startIndex, int count)
             {
                 return ShouldBuild(____targetList);
+            }
+        }
+
+        [HarmonyPatch(typeof(UserInspectorItem))]
+        class UserInspectorItem_Patch
+        {
+            [HarmonyTranspiler]
+            [HarmonyPatch("OnChanges")]
+            static IEnumerable<CodeInstruction> OnChangesTranspiler(IEnumerable<CodeInstruction> codes) => Editor_OnChanges_Transpiler(codes, AccessTools.Field(typeof(UserInspectorItem), "_user"));
+
+            //the cleaner solution is creating a PatchedSync<T> but Sync<T> is sealed and net 9 enforces that at runtime
+            [HarmonyPrefix]
+            [HarmonyPatch("OpenComponents")]
+            static bool OpenComponentsPrefix(UserInspectorItem __instance, SyncRef<User> ____user)
+            {
+                if (____user.Target == null || __instance.World.IsAuthority ||
+                    __instance.Slot.GetComponentInParents<UserInspector>() is not UserInspector inspector) return true;
+                OpenUserInspector(inspector, new(View.Components, ____user.Target));
+                return false;
+            }
+
+            [HarmonyPrefix]
+            [HarmonyPatch("OpenStream")]
+            static bool OpenStreamPrefix(UserInspectorItem __instance, SyncRef<User> ____user, ushort streamIndex)
+            {
+                if (____user.Target == null || __instance.World.IsAuthority ||
+                    __instance.Slot.GetComponentInParents<UserInspector>() is not UserInspector inspector) return true;
+                OpenUserInspector(inspector, new(View.Streams, ____user.Target, streamIndex));
+                return false;
+            }
+
+            [HarmonyPrefix]
+            [HarmonyPatch("OpenUser")]
+            static bool OpenUserPrefix(UserInspectorItem __instance, SyncRef<User> ____user)
+            {
+                if (____user.Target == null || __instance.World.IsAuthority ||
+                    __instance.Slot.GetComponentInParents<UserInspector>() is not UserInspector inspector) return true;
+                OpenUserInspector(inspector, new(View.User, ____user.Target));
+                return false;
+            }
+        }
+        static MethodInfo _FilterWorker = AccessTools.Method(typeof(UserInspector), "FilterWorker");
+        static void OpenUserInspector(UserInspector Inspector, UserInspectorState state)
+        {
+            userInspectorStates.AddOrUpdate(Inspector, state);
+            ((SyncRef<Sync<string>>)Inspector.GetSyncMember("_userText")).Target?.Value = $"User: {state.Target?.UserName} ({state.Target?.ReferenceID})";
+            var uislot = ((SyncRef<Slot>)Inspector.GetSyncMember("_workersContentRoot")).Target;
+            if (uislot == null) return;
+            uislot.DestroyChildren();
+            uislot.AddSlot("WorkersRoot").AttachComponent<WorkerInspector>().SetupContainer(state.Target, null, _FilterWorker.CreateDelegate<System.Predicate<Worker>>(Inspector), state.View == View.User);
+        }
+
+        [HarmonyPatch(typeof(UserInspector), "FilterWorker")]
+        class UserInspector_Patch
+        {
+            static bool Prefix(UserInspector __instance, ref bool __result, Worker worker)
+            {
+                UserInspectorState state;
+                if (!userInspectorStates.TryGetValue(__instance, out state)) return true;
+
+                switch (state.View)
+                {
+                    case View.Components:
+                        __result = worker is UserComponent;
+                        break;
+                    case View.Streams:
+                        if (worker is Stream stream) __result = stream.GroupIndex == state.StreamGroup;
+                        else __result = false;
+                        break;
+                    case View.User:
+                        __result = worker is User;
+                        break;
+                    default:
+                        __result = true;
+                        break;
+                }
+                return false;
             }
         }
     }
