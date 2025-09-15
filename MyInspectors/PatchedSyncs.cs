@@ -1,9 +1,7 @@
 ﻿using Elements.Core;
 using FrooxEngine;
-using System.Collections.Generic;
-using System.IO;
-using System.Runtime.CompilerServices;
-using static MyInspectors.MyInspectors;
+
+using static MyInspectors.Plugin;
 
 namespace MyInspectors;
 
@@ -20,7 +18,7 @@ class PatchedSyncRef<T> : SyncRef<T>, EditorTargetField where T : class, IWorldE
     }
     protected override bool InternalSetRefID(in RefID id, T prevTarget)
     {
-        if (!config.GetValue(KEY_ENABLE)) return base.InternalSetRefID(id, prevTarget);
+        if (!Enable.Value) return base.InternalSetRefID(id, prevTarget);
 
         RefID value = id;
         bool sync = false;
@@ -56,7 +54,7 @@ class PatchedSyncRef<T> : SyncRef<T>, EditorTargetField where T : class, IWorldE
     bool EditorTargetField.ShouldBuild => !remoteValue.HasValue || (remoteValue.HasValue && IsNullOrDisposed(remoteValue.Value, World));
 
 }
-class PatchedSync<T> : Sync<T>, EditorTargetField //you must patch your froox 
+class PatchedSync<T> : Sync<T>, EditorTargetField //to build you must run Resonite once with the patcher and assembly dumping enabled. you may need to restart your ide
 {
     T remoteValue = default;
     protected override void InternalDecodeDelta(BinaryReader reader, BinaryMessageBatch inboundMessage) => InternalDecodeFull(reader, inboundMessage);
@@ -68,7 +66,7 @@ class PatchedSync<T> : Sync<T>, EditorTargetField //you must patch your froox
     }
     protected override bool InternalSetValue(in T value, bool sync = true, bool change = true)
     {
-        if (config.GetValue(KEY_ENABLE) && !Coder<T>.Equals(remoteValue, value))
+        if (Enable.Value && !Coder<T>.Equals(remoteValue, value))
         {
             sync = false;
             change = true;

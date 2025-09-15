@@ -1,5 +1,10 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36408.4 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyInspectors", "MyInspectors\MyInspectors.csproj", "{FFA93FA9-4040-46FF-8A1C-2A190C0CC235}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyInspectorsPatcher", "Patcher\MyInspectorsPatcher.csproj", "{0A0C5D40-ABE9-658B-E3B0-470F6B3EE6AC}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -11,6 +16,10 @@ Global
 		{FFA93FA9-4040-46FF-8A1C-2A190C0CC235}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{FFA93FA9-4040-46FF-8A1C-2A190C0CC235}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{FFA93FA9-4040-46FF-8A1C-2A190C0CC235}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0A0C5D40-ABE9-658B-E3B0-470F6B3EE6AC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0A0C5D40-ABE9-658B-E3B0-470F6B3EE6AC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0A0C5D40-ABE9-658B-E3B0-470F6B3EE6AC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0A0C5D40-ABE9-658B-E3B0-470F6B3EE6AC}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

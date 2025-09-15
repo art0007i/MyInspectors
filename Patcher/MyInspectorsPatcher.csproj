@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		
+		<GamePath Condition="'$(ResonitePath)' != ''">$(ResonitePath)/</GamePath>
+		<GamePath Condition="Exists('$(MSBuildProgramFiles32)\Steam\steamapps\common\Resonite\')">$(MSBuildProgramFiles32)\Steam\steamapps\common\Resonite\</GamePath>
+		<GamePath Condition="Exists('$(HOME)/.steam/steam/steamapps/common/Resonite/')">$(HOME)/.steam/steam/steamapps/common/Resonite/</GamePath>
+		<PluginTargetDir>$(GamePath)BepInEx\patchers\$(AssemblyName)</PluginTargetDir>
+
+		<CopyToPlugins>true</CopyToPlugins>
+		
+		<RestoreAdditionalProjectSources>
+			https://nuget-modding.resonite.net/v3/index.json;
+		</RestoreAdditionalProjectSources>
+  </PropertyGroup>
+
+	<ItemGroup>
+    <PackageReference Include="BepInEx.NET.CoreCLR" Version="6.0.0-be.*" IncludeAssets="compile" />
+	</ItemGroup>
+
+	<!-- Post-build copy to game patchers folder -->
+	<Target Name="PostBuild" AfterTargets="PostBuildEvent">
+		<ItemGroup>
+			<PluginFiles Include="$(TargetPath)" />
+			<PluginFiles Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+		</ItemGroup>
+
+		<Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(PluginTargetDir)" Condition="'$(CopyToPlugins)' == 'true'" />
+		<Message Text="Copied plugin files to $(PluginTargetDir)" Importance="high" Condition="'$(CopyToPlugins)' == 'true'" />
+	</Target>
+</Project>
