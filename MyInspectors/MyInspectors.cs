@@ -6,6 +6,7 @@ using FrooxEngine.ProtoFlux.Runtimes.Execution.Nodes.FrooxEngine.Slots;
 using FrooxEngine.UIX;
 using HarmonyLib;
 using ResoniteModLoader;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -19,7 +20,7 @@ namespace MyInspectors
     {
         public override string Name => "MyInspectors";
         public override string Author => "art0007i";
-        public override string Version => "2.1.0";
+        public override string Version => "2.1.1";
         public override string Link => "https://github.com/art0007i/MyInspectors/";
 
         public static ModConfiguration config { get; private set; }
@@ -361,5 +362,50 @@ namespace MyInspectors
                 return false;
             }
         }
+
+        static FieldInfo _typeToIndex = AccessTools.Field(typeof(AssemblyTypeRegistry), "_typeToIndex");
+        [HarmonyPatch(typeof(TypeManager), "InitializeAssemblies")]
+        class TypeManager_Patch
+        {
+            static void Postfix(Dictionary<Assembly, int> ____assemblyToIndex, List<AssemblyTypeRegistry> ____allowedAssemblies)
+            {
+                int index;
+                if (____assemblyToIndex.TryGetValue(typeof(SyncRef<>).Assembly, out index))
+                {
+                    ____assemblyToIndex.TryAdd(typeof(PatchedSyncRef<>).Assembly, index);
+                    var tTI = (Dictionary<Type, int>)_typeToIndex.GetValue(____allowedAssemblies[index]);
+                    tTI.TryAdd(typeof(PatchedSyncRef<>), tTI[typeof(SyncRef<>)]);
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(SyncType), "set_Value")]
+        class SyncType_Patch
+        {
+            static Exception Finalizer(Exception __exception, SyncType __instance, Type value)
+            {
+                if (__exception?.Message.Contains("MyInspectors") == true)
+                {
+                    SetBase(__instance, value);
+                    return null;
+                }
+                return __exception;
+            }
+
+            [HarmonyReversePatch]
+            [HarmonyPatch(typeof(SyncField<Type>), "set_Value")]
+            public static void SetBase(object instance, Type value) { }
+        }
+
+        [HarmonyPatch(typeof(Coder), "IsEnginePrimitive")]
+        class Coder_Patch
+        {
+            static bool Prefix(ref bool __result, Type type)
+            {
+                if(type?.Name?.Contains("MyInspectors") == true) { __result = true; return false; }
+                return true;
+            }
+        }
+        
     }
 }
