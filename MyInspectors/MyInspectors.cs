@@ -18,9 +18,10 @@ namespace MyInspectors
 {
     public class MyInspectors : ResoniteMod
     {
+        public const string VERSION = "2.1.2";
         public override string Name => "MyInspectors";
         public override string Author => "art0007i";
-        public override string Version => "2.1.1";
+        public override string Version => VERSION;
         public override string Link => "https://github.com/art0007i/MyInspectors/";
 
         public static ModConfiguration config { get; private set; }
